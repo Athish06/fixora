@@ -15,6 +15,11 @@ class Database:
         try:
             cls.client = AsyncIOMotorClient(settings.mongo_url)
             cls.db = cls.client[settings.db_name]
+            
+            # Create indexes for users collection
+            await cls.db.users.create_index('email', unique=True)
+            await cls.db.users.create_index('id', unique=True)
+            
             logger.info(f'Connected to MongoDB: {settings.db_name}')
         except Exception as e:
             logger.error(f'Failed to connect to MongoDB: {e}')

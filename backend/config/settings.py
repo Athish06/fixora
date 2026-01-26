@@ -6,12 +6,12 @@ import os
 class Settings(BaseSettings):
     # MongoDB
     mongo_url: str = os.environ.get('MONGO_URL', 'mongodb://localhost:27017')
-    db_name: str = os.environ.get('DB_NAME', 'vulnscan_db')
+    db_name: str = os.environ.get('DB_NAME', 'IP')
     
     # JWT
-    secret_key: str = os.environ.get('SECRET_KEY', 'your-super-secret-key-change-in-production-min-32-chars')
-    algorithm: str = 'HS256'
-    access_token_expire_minutes: int = 60 * 24 * 7  # 7 days
+    secret_key: str = os.environ.get('JWT_SECRET_KEY', 'your-super-secret-key-change-in-production-min-32-chars')
+    algorithm: str = os.environ.get('JWT_ALGORITHM', 'HS256')
+    access_token_expire_minutes: int = int(os.environ.get('ACCESS_TOKEN_EXPIRE_MINUTES', 10080))  # 7 days
     
     # CORS
     cors_origins: str = os.environ.get('CORS_ORIGINS', '*')
@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     class Config:
         env_file = '.env'
         case_sensitive = False
+        extra = 'ignore'  # Allow extra fields from .env
 
 @lru_cache()
 def get_settings() -> Settings:
