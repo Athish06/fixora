@@ -48,7 +48,7 @@ const Login = () => {
               <LogIn className="w-8 h-8 text-white" />
             </div>
             <h1 className="text-3xl font-bold mb-2">Welcome Back</h1>
-            <p className="text-muted-foreground">Sign in to your VulnScan account</p>
+            <p className="text-muted-foreground">Sign in to your Fixora account</p>
           </div>
 
           <form onSubmit={handleSubmit} className="space-y-6" data-testid="login-form">

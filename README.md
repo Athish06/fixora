@@ -1,4 +1,4 @@
-# VulnScan - AI-Powered Vulnerability Detection Platform
+# Fixora - AI-Powered Vulnerability Detection Platform
 
 An intelligent vulnerability scanning platform that uses AI to discover custom code patterns, classify vulnerabilities, and auto-generate fixes.
 
@@ -85,7 +85,7 @@ To connect and scan repositories, you'll need a GitHub Personal Access Token:
 
 2. **Generate New Token**
    - Click "Generate new token (classic)"
-   - Give it a descriptive name: `VulnScan Repository Access`
+   - Give it a descriptive name: `Fixora Repository Access`
    - Set expiration as needed (recommend: 90 days)
 
 3. **Select Required Scopes**
@@ -103,9 +103,9 @@ To connect and scan repositories, you'll need a GitHub Personal Access Token:
    - **Important**: Copy the token immediately (it won't be shown again)
    - Save it securely
 
-#### Step 2: Configure Token in VulnScan
+#### Step 2: Configure Token in Fixora
 
-1. **Login to VulnScan**
+1. **Login to Fixora**
 2. **Go to Settings Page**
 3. **Paste your GitHub token** in the "GitHub Personal Access Token" field
 4. **Click "Save Token"**
@@ -136,12 +136,12 @@ The application uses HuggingFace Inference API for vulnerability detection:
 2. **Create Access Token**
    - Go to: https://huggingface.co/settings/tokens
    - Click "New token"
-   - Name: `VulnScan API Access`
+   - Name: `Fixora API Access`
    - Type: Select "Read" or "Fine-grained" with "Inference Providers" permission
    - Click "Generate a token"
    - Copy the token (starts with `hf_`)
 
-#### Step 2: Configure in VulnScan
+#### Step 2: Configure in Fixora
 
 1. **Go to Settings Page**
 2. **Paste your HuggingFace token** in the API Token field

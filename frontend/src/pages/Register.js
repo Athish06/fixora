@@ -54,9 +54,11 @@ const Register = () => {
         otp,
       });
       
-      // Store token and navigate
-      localStorage.setItem('token', response.data.access_token);
-      const loginSuccess = useAuthStore.getState().setToken(response.data.access_token);
+      // Store token using authStore (which now uses cookies)
+      useAuthStore.getState().setToken(response.data.access_token);
+      
+      // Fetch user data
+      await useAuthStore.getState().fetchUser();
       
       toast.success('Email verified successfully!');
       navigate('/dashboard');

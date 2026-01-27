@@ -1,22 +1,71 @@
 import { create } from 'zustand';
+import { getCookie, setCookie, deleteCookie } from '../utils/cookies';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 
+// Helper to get user from sessionStorage
+const getStoredUser = () => {
+  try {
+    const stored = sessionStorage.getItem('user');
+    return stored ? JSON.parse(stored) : null;
+  } catch {
+    return null;
+  }
+};
+
+// Helper to store user in sessionStorage
+const storeUser = (user) => {
+  if (user) {
+    sessionStorage.setItem('user', JSON.stringify(user));
+  } else {
+    sessionStorage.removeItem('user');
+  }
+};
+
 export const useAuthStore = create((set, get) => ({
-  token: localStorage.getItem('token'),
-  user: null,
-  isAuthenticated: !!localStorage.getItem('token'),
+  token: getCookie('auth_token'),
+  user: getStoredUser(),
+  isAuthenticated: !!getCookie('auth_token'),
   
   setToken: (token) => {
-    localStorage.setItem('token', token);
+    setCookie('auth_token', token, 7); // 7 days expiry
     set({ token, isAuthenticated: true });
   },
   
-  setUser: (user) => set({ user }),
+  setUser: (user) => {
+    storeUser(user);
+    set({ user });
+  },
   
   logout: () => {
-    localStorage.removeItem('token');
+    deleteCookie('auth_token');
+    sessionStorage.removeItem('user');
     set({ token: null, user: null, isAuthenticated: false });
+  },
+  
+  // Fetch user data using stored token
+  fetchUser: async () => {
+    const token = getCookie('auth_token');
+    if (!token) return false;
+    
+    try {
+      const response = await fetch(`${API}/auth/me`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      
+      if (!response.ok) {
+        // Token is invalid, clear it
+        get().logout();
+        return false;
+      }
+      
+      const userData = await response.json();
+      get().setUser(userData);
+      return true;
+    } catch (error) {
+      console.error('Failed to fetch user:', error);
+      return false;
+    }
   },
   
   login: async (email, password) => {

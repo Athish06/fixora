@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { useAuthStore } from './store/authStore';
 import { Toaster } from './components/ui/sonner';
@@ -26,6 +26,17 @@ const PublicRoute = ({ children }) => {
 };
 
 function App() {
+  const isAuthenticated = useAuthStore((state) => state.isAuthenticated);
+  const user = useAuthStore((state) => state.user);
+  const fetchUser = useAuthStore((state) => state.fetchUser);
+
+  // Fetch user data on app load if authenticated but no user data
+  useEffect(() => {
+    if (isAuthenticated && !user) {
+      fetchUser();
+    }
+  }, [isAuthenticated, user, fetchUser]);
+
   return (
     <div className="App grain-texture">
       <BrowserRouter>

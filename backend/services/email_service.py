@@ -97,7 +97,7 @@ class EmailService:
         otp = self.generate_otp()
         self.store_otp(email, otp, purpose='verification', expires_in=10)
         
-        subject = "Verify Your Email - VulnScan"
+        subject = "Verify Your Email - Fixora"
         body = f"""
         <!DOCTYPE html>
         <html>
@@ -118,13 +118,13 @@ class EmailService:
                 </div>
                 <div class="content">
                     <h2>Hello {full_name}!</h2>
-                    <p>Thank you for registering with VulnScan. To complete your registration, please verify your email address using the OTP below:</p>
+                    <p>Thank you for registering with Fixora. To complete your registration, please verify your email address using the OTP below:</p>
                     <div class="otp-box">{otp}</div>
                     <p><strong>This OTP will expire in 10 minutes.</strong></p>
                     <p>If you didn't request this verification, please ignore this email.</p>
                 </div>
                 <div class="footer">
-                    <p>© 2026 VulnScan - AI-Powered Vulnerability Scanning Platform</p>
+                    <p>© 2026 Fixora - AI-Powered Vulnerability Scanning Platform</p>
                 </div>
             </div>
         </body>
@@ -138,7 +138,7 @@ class EmailService:
         otp = self.generate_otp()
         self.store_otp(email, otp, purpose='password_reset', expires_in=10)
         
-        subject = "Reset Your Password - VulnScan"
+        subject = "Reset Your Password - Fixora"
         body = f"""
         <!DOCTYPE html>
         <html>
@@ -168,7 +168,7 @@ class EmailService:
                     </div>
                 </div>
                 <div class="footer">
-                    <p>© 2026 VulnScan - AI-Powered Vulnerability Scanning Platform</p>
+                    <p>© 2026 Fixora - AI-Powered Vulnerability Scanning Platform</p>
                 </div>
             </div>
         </body>

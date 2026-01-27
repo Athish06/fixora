@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { Plus, GitBranch, AlertTriangle, Calendar, Search } from 'lucide-react';
+import { Plus, GitBranch, AlertTriangle, Calendar, Search, Github, Settings } from 'lucide-react';
 import DashboardLayout from '../components/DashboardLayout';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
 import { Button } from '../components/ui/button';
@@ -90,11 +90,34 @@ const Repositories = () => {
               Manage your connected GitHub repositories
             </p>
           </div>
+          <div className="flex gap-3">
+            <Button variant="outline" className="shadow-md" data-testid="connect-github-button">
+              <Github className="w-4 h-4 mr-2" />
+              Connect GitHub
+            </Button>
+            <Button variant="outline" className="shadow-md" data-testid="manage-repos-button">
+              <Settings className="w-4 h-4 mr-2" />
+              Manage Repositories
+            </Button>
+          </div>
+        </div>
+
+        {/* Search and Connect Repository */}
+        <div className="flex items-center gap-4">
+          <div className="relative flex-1 max-w-md">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+            <Input
+              placeholder="Search repositories..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              className="pl-10"
+              data-testid="search-repos-input"
+            />
+          </div>
           <Dialog open={showAddDialog} onOpenChange={setShowAddDialog}>
             <DialogTrigger asChild>
               <Button className="bg-primary hover:bg-primary/90 shadow-lg" data-testid="add-repo-button">
-                <Plus className="w-4 h-4 mr-2" />
-                Connect Repository
+                Connect Repositories
               </Button>
             </DialogTrigger>
             <DialogContent className="glass-card">
@@ -164,18 +187,6 @@ const Repositories = () => {
               </form>
             </DialogContent>
           </Dialog>
-        </div>
-
-        {/* Search */}
-        <div className="relative">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-          <Input
-            placeholder="Search repositories..."
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
-            className="pl-10 max-w-md"
-            data-testid="search-repos-input"
-          />
         </div>
 
         {/* Repository List */}

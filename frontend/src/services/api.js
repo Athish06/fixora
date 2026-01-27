@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { getCookie } from '../utils/cookies';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 
@@ -11,7 +12,7 @@ const apiClient = axios.create({
 });
 
 const getHeaders = () => {
-  const token = localStorage.getItem('token');
+  const token = getCookie('auth_token');
   return {
     'Content-Type': 'application/json',
     ...(token && { 'Authorization': `Bearer ${token}` })

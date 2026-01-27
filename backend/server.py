@@ -1,4 +1,4 @@
-# VulnScan API Server
+# Fixora API Server
 from fastapi import FastAPI, APIRouter
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
@@ -36,7 +36,7 @@ async def lifespan(app: FastAPI):
     logger.info('Application shutdown')
 
 app = FastAPI(
-    title='VulnScan API',
+    title='Fixora API',
     description='AI-powered vulnerability scanning platform',
     version='1.0.0',
     lifespan=lifespan
@@ -69,7 +69,7 @@ app.include_router(api_router)
 
 @app.get('/')
 async def root():
-    return {'message': 'VulnScan API v1.0.0', 'status': 'operational'}
+    return {'message': 'Fixora API v1.0.0', 'status': 'operational'}
 
 @app.get('/health')
 async def health():

@@ -4,14 +4,15 @@ import { motion, AnimatePresence } from 'framer-motion';
 import {
   Home,
   FolderGit2,
-  AlertTriangle,
+  Shield,
   Brain,
   Activity,
   Settings as SettingsIcon,
   LogOut,
   Menu,
   X,
-  ChevronLeft,
+  PanelLeftClose,
+  PanelLeft,
   ChevronRight
 } from 'lucide-react';
 import { useAuthStore } from '../store/authStore';
@@ -33,13 +34,29 @@ const DashboardLayout = ({ children }) => {
     localStorage.setItem('sidebarCollapsed', sidebarCollapsed);
   }, [sidebarCollapsed]);
 
-  const navigation = [
-    { name: 'Dashboard', path: '/dashboard', icon: Home },
-    { name: 'Repositories', path: '/repositories', icon: FolderGit2 },
-    { name: 'Vulnerabilities', path: '/vulnerabilities', icon: AlertTriangle },
-    { name: 'AI Knowledge', path: '/ai-knowledge', icon: Brain },
-    { name: 'Activity Log', path: '/activity', icon: Activity },
-    { name: 'Settings', path: '/settings', icon: SettingsIcon },
+  // Navigation organized by sections
+  const navigationSections = [
+    {
+      title: 'Overview',
+      items: [
+        { name: 'Dashboard', path: '/dashboard', icon: Home },
+      ]
+    },
+    {
+      title: 'Security',
+      items: [
+        { name: 'Repositories', path: '/repositories', icon: FolderGit2 },
+        { name: 'Vulnerabilities', path: '/vulnerabilities', icon: Shield },
+      ]
+    },
+    {
+      title: 'Intelligence',
+      items: [
+        { name: 'AI Knowledge', path: '/ai-knowledge', icon: Brain },
+        { name: 'Activity Log', path: '/activity', icon: Activity },
+        { name: 'Settings', path: '/settings', icon: SettingsIcon },
+      ]
+    }
   ];
 
   const handleLogout = () => {
@@ -49,99 +66,160 @@ const DashboardLayout = ({ children }) => {
 
   return (
     <div className="min-h-screen bg-background">
+      {/* Sidebar */}
+      <aside
+        className={`fixed left-0 top-0 h-screen bg-card border-r border-border z-40 transition-all duration-300 ease-in-out flex flex-col ${
+          sidebarOpen ? 'translate-x-0' : '-translate-x-full'
+        } md:translate-x-0 ${sidebarCollapsed ? 'md:w-[72px]' : 'md:w-[260px]'} w-[260px]`}
+        data-testid="sidebar"
+      >
+        {/* Sidebar Header with Logo */}
+        <div className={`flex items-center ${sidebarCollapsed ? 'justify-center' : 'justify-between'} h-16 px-4 border-b border-border`}>
+          <Link to="/dashboard" className={`flex items-center ${sidebarCollapsed ? '' : 'space-x-3'}`} data-testid="logo">
+            <div className="w-8 h-8 bg-primary rounded-lg flex items-center justify-center flex-shrink-0">
+              <span className="text-primary-foreground font-bold text-base">F</span>
+            </div>
+            {!sidebarCollapsed && (
+              <span className="text-lg font-semibold text-foreground">Fixora</span>
+            )}
+          </Link>
+          {!sidebarCollapsed && (
+            <button
+              onClick={() => setSidebarCollapsed(true)}
+              className="hidden md:flex w-8 h-8 items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+              aria-label="Collapse sidebar"
+            >
+              <PanelLeftClose className="w-4 h-4" />
+            </button>
+          )}
+          {sidebarCollapsed && (
+            <button
+              onClick={() => setSidebarCollapsed(false)}
+              className="hidden md:flex absolute -right-3 top-6 w-6 h-6 bg-card border border-border rounded-full items-center justify-center text-muted-foreground hover:text-foreground transition-colors shadow-sm"
+              aria-label="Expand sidebar"
+            >
+              <ChevronRight className="w-3 h-3" />
+            </button>
+          )}
+        </div>
+
+        {/* Navigation */}
+        <nav className="flex-1 overflow-y-auto py-4 px-3">
+          {navigationSections.map((section, sectionIndex) => (
+            <div key={section.title} className={sectionIndex > 0 ? 'mt-6' : ''}>
+              {/* Section Header */}
+              {!sidebarCollapsed && (
+                <div className="px-3 mb-2">
+                  <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+                    {section.title}
+                  </span>
+                </div>
+              )}
+              {sidebarCollapsed && sectionIndex > 0 && (
+                <div className="mx-3 mb-3 border-t border-border" />
+              )}
+              
+              {/* Section Items */}
+              <div className="space-y-1">
+                {section.items.map((item) => {
+                  const Icon = item.icon;
+                  const isActive = location.pathname === item.path;
+                  return (
+                    <Link
+                      key={item.path}
+                      to={item.path}
+                      className={`group relative flex items-center ${
+                        sidebarCollapsed ? 'justify-center px-2' : 'px-3'
+                      } py-2.5 rounded-lg transition-all duration-150 ${
+                        isActive
+                          ? 'bg-primary text-primary-foreground shadow-sm'
+                          : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground'
+                      }`}
+                      onClick={() => setSidebarOpen(false)}
+                      data-testid={`nav-${item.name.toLowerCase().replace(' ', '-')}`}
+                    >
+                      <Icon className={`w-5 h-5 flex-shrink-0 ${isActive ? '' : ''}`} />
+                      {!sidebarCollapsed && (
+                        <span className="ml-3 text-sm font-medium">{item.name}</span>
+                      )}
+
+                      {/* Tooltip for collapsed state */}
+                      {sidebarCollapsed && (
+                        <div className="absolute left-full ml-3 px-2.5 py-1.5 bg-popover text-popover-foreground text-xs font-medium rounded-md opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all whitespace-nowrap pointer-events-none z-50 shadow-lg border border-border">
+                          {item.name}
+                        </div>
+                      )}
+                    </Link>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
+        </nav>
+
+        {/* Sidebar Footer - User Info (visible when expanded) */}
+        {!sidebarCollapsed && (
+          <div className="mt-auto border-t border-border p-4">
+            <div className="flex items-center space-x-3">
+              <div className="w-9 h-9 bg-primary/10 rounded-full flex items-center justify-center text-primary font-medium text-sm flex-shrink-0">
+                {user?.full_name?.charAt(0)?.toUpperCase() || 'U'}
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium text-foreground truncate">
+                  {user?.full_name || 'User'}
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
+      </aside>
+
       {/* Header */}
-      <header className="fixed top-0 left-0 right-0 z-40 bg-background/80 backdrop-blur-md border-b border-white/5">
-        <div className="flex items-center justify-between px-6 py-4">
-          <div className="flex items-center space-x-4">
+      <header className={`fixed top-0 right-0 z-30 bg-background/95 backdrop-blur-sm border-b border-border transition-all duration-300 ${
+        sidebarCollapsed ? 'md:left-[72px]' : 'md:left-[260px]'
+      } left-0`}>
+        <div className="flex items-center justify-between h-16 px-4 md:px-6">
+          <div className="flex items-center space-x-3">
             <button
               onClick={() => setSidebarOpen(!sidebarOpen)}
-              className="md:hidden"
+              className="md:hidden p-2 rounded-lg hover:bg-accent transition-colors"
               data-testid="mobile-menu-button"
             >
-              {sidebarOpen ? <X className="w-6 h-6" /> : <Menu className="w-6 h-6" />}
+              {sidebarOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
             </button>
-            <Link to="/dashboard" className="text-2xl font-bold flex items-center space-x-2" data-testid="logo">
-              <div className="w-8 h-8 bg-primary rounded-md flex items-center justify-center">
-                <AlertTriangle className="w-5 h-5 text-white" />
+            {/* Mobile logo */}
+            <Link to="/dashboard" className="flex items-center space-x-2 md:hidden" data-testid="mobile-logo">
+              <div className="w-8 h-8 bg-primary rounded-lg flex items-center justify-center">
+                <span className="text-primary-foreground font-bold text-base">F</span>
               </div>
-              <span>VulnScan</span>
+              <span className="text-lg font-semibold">Fixora</span>
             </Link>
           </div>
           <div className="flex items-center space-x-2">
             <ThemeToggle />
-            <div className="hidden md:flex items-center space-x-2 text-sm text-muted-foreground">
-              <div className="w-8 h-8 bg-primary/20 rounded-full flex items-center justify-center">
-                {user?.full_name?.charAt(0) || 'U'}
-              </div>
-              <span>{user?.full_name || 'User'}</span>
-            </div>
             <Button
               variant="ghost"
               size="sm"
               onClick={handleLogout}
+              className="text-muted-foreground hover:text-foreground"
               data-testid="logout-button"
             >
-              <LogOut className="w-4 h-4 mr-2" />
-              Logout
+              <LogOut className="w-4 h-4 md:mr-2" />
+              <span className="hidden md:inline">Logout</span>
             </Button>
           </div>
         </div>
       </header>
 
-      {/* Sidebar */}
-      <aside
-        className={`fixed left-0 top-16 h-[calc(100vh-4rem)] bg-card border-r border-border z-30 transition-all duration-300 ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'
-          } md:translate-x-0 ${sidebarCollapsed ? 'md:w-16' : 'md:w-64'
-          } w-64`}
-        data-testid="sidebar"
-      >
-        {/* Collapse Toggle Button (Desktop Only) */}
-        <button
-          onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
-          className="hidden md:flex absolute -right-3 top-6 w-6 h-6 bg-primary rounded-full items-center justify-center text-white hover:bg-primary/90 transition-colors z-50"
-          aria-label="Toggle sidebar"
-        >
-          {sidebarCollapsed ? <ChevronRight className="w-4 h-4" /> : <ChevronLeft className="w-4 h-4" />}
-        </button>
-
-        <nav className="p-4 space-y-2">
-          {navigation.map((item) => {
-            const Icon = item.icon;
-            const isActive = location.pathname === item.path;
-            return (
-              <Link
-                key={item.path}
-                to={item.path}
-                className={`group relative flex items-center ${sidebarCollapsed ? 'justify-center' : 'space-x-3'} px-4 py-3 rounded-md transition-all duration-200 ${isActive
-                    ? 'bg-primary text-white glow-primary'
-                    : 'text-muted-foreground hover:bg-accent/10 hover:text-accent'
-                  }`}
-                onClick={() => setSidebarOpen(false)}
-                data-testid={`nav-${item.name.toLowerCase().replace(' ', '-')}`}
-              >
-                <Icon className="w-5 h-5 flex-shrink-0" />
-                {!sidebarCollapsed && <span className="font-medium">{item.name}</span>}
-
-                {/* Tooltip for collapsed state */}
-                {sidebarCollapsed && (
-                  <div className="absolute left-full ml-2 px-2 py-1 bg-popover text-popover-foreground text-sm rounded-md opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap pointer-events-none z-50">
-                    {item.name}
-                  </div>
-                )}
-              </Link>
-            );
-          })}
-        </nav>
-      </aside>
-
       {/* Main Content */}
-      <main className={`pt-16 transition-all duration-300 ${sidebarCollapsed ? 'md:ml-16' : 'md:ml-64'
-        }`}>
-        <div className="p-6 md:p-8">
+      <main className={`pt-16 min-h-screen transition-all duration-300 ease-in-out ${
+        sidebarCollapsed ? 'md:ml-[72px]' : 'md:ml-[260px]'
+      }`}>
+        <div className="p-4 md:p-6 lg:p-8">
           <motion.div
-            initial={{ opacity: 0, y: 20 }}
+            initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.5 }}
+            transition={{ duration: 0.3, ease: 'easeOut' }}
           >
             {children}
           </motion.div>
@@ -149,12 +227,18 @@ const DashboardLayout = ({ children }) => {
       </main>
 
       {/* Mobile overlay */}
-      {sidebarOpen && (
-        <div
-          className="fixed inset-0 bg-black/50 z-20 md:hidden"
-          onClick={() => setSidebarOpen(false)}
-        />
-      )}
+      <AnimatePresence>
+        {sidebarOpen && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.2 }}
+            className="fixed inset-0 bg-black/50 z-30 md:hidden"
+            onClick={() => setSidebarOpen(false)}
+          />
+        )}
+      </AnimatePresence>
     </div>
   );
 };

@@ -6,26 +6,27 @@
 
 @layer base {
   :root {
-    --background: 0 0% 3.9%;
-    --foreground: 0 0% 93%;
-    --card: 0 0% 7.1%;
-    --card-foreground: 0 0% 93%;
-    --popover: 0 0% 7.1%;
-    --popover-foreground: 0 0% 93%;
-    --primary: 214 100% 60%;
+    /* Dark mode - modern dark theme */
+    --background: 222 47% 6%;
+    --foreground: 210 40% 98%;
+    --card: 222 47% 8%;
+    --card-foreground: 210 40% 98%;
+    --popover: 222 47% 10%;
+    --popover-foreground: 210 40% 98%;
+    --primary: 217 91% 60%;
     --primary-foreground: 0 0% 100%;
-    --secondary: 215 28% 17%;
-    --secondary-foreground: 210 17% 98%;
-    --muted: 215 28% 17%;
-    --muted-foreground: 0 0% 61%;
-    --accent: 217 91% 60%;
-    --accent-foreground: 0 0% 100%;
+    --secondary: 217 33% 17%;
+    --secondary-foreground: 210 40% 98%;
+    --muted: 217 33% 17%;
+    --muted-foreground: 215 20% 55%;
+    --accent: 217 33% 17%;
+    --accent-foreground: 210 40% 98%;
     --destructive: 0 84% 60%;
     --destructive-foreground: 0 0% 100%;
-    --border: 0 0% 15%;
-    --input: 0 0% 15%;
-    --ring: 214 100% 60%;
-    --chart-1: 214 100% 60%;
+    --border: 217 33% 17%;
+    --input: 217 33% 17%;
+    --ring: 217 91% 60%;
+    --chart-1: 217 91% 60%;
     --chart-2: 142 71% 45%;
     --chart-3: 38 92% 50%;
     --chart-4: 0 84% 60%;
@@ -34,26 +35,27 @@
   }
 
   .light {
+    /* Light mode - clean white theme matching the reference */
     --background: 0 0% 100%;
-    --foreground: 222.2 47.4% 11.2%;
+    --foreground: 222 47% 11%;
     --card: 0 0% 100%;
-    --card-foreground: 222.2 47.4% 11.2%;
+    --card-foreground: 222 47% 11%;
     --popover: 0 0% 100%;
-    --popover-foreground: 222.2 47.4% 11.2%;
-    --primary: 214 100% 47%;
+    --popover-foreground: 222 47% 11%;
+    --primary: 217 91% 60%;
     --primary-foreground: 0 0% 100%;
-    --secondary: 210 40% 96.1%;
-    --secondary-foreground: 222.2 47.4% 11.2%;
-    --muted: 210 40% 96.1%;
-    --muted-foreground: 215 20.2% 35.1%;
-    --accent: 210 40% 96.1%;
-    --accent-foreground: 214 100% 40%;
-    --destructive: 0 84.2% 60.2%;
+    --secondary: 220 14% 96%;
+    --secondary-foreground: 222 47% 11%;
+    --muted: 220 14% 96%;
+    --muted-foreground: 220 9% 46%;
+    --accent: 220 14% 96%;
+    --accent-foreground: 222 47% 11%;
+    --destructive: 0 84% 60%;
     --destructive-foreground: 0 0% 100%;
-    --border: 214.3 31.8% 91.4%;
-    --input: 214.3 31.8% 91.4%;
-    --ring: 214 100% 47%;
-    --chart-1: 214 100% 47%;
+    --border: 220 13% 91%;
+    --input: 220 13% 91%;
+    --ring: 217 91% 60%;
+    --chart-1: 217 91% 60%;
     --chart-2: 142 71% 45%;
     --chart-3: 38 92% 50%;
     --chart-4: 0 84% 60%;
@@ -90,18 +92,34 @@
 
 @layer utilities {
   .glass-card {
-    @apply bg-black/40 backdrop-blur-xl border border-white/10;
+    @apply bg-card/80 backdrop-blur-xl border border-border/50 shadow-sm;
   }
 
   .glow-primary {
-    box-shadow: 0 0 20px rgba(59, 130, 246, 0.3);
+    box-shadow: 0 0 20px rgba(59, 130, 246, 0.15);
   }
 
   .text-shadow {
-    text-shadow: 0 2px 10px rgba(0, 0, 0, 0.5);
+    text-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);
+  }
+
+  /* Modern card styles */
+  .card-hover {
+    @apply transition-all duration-200 hover:shadow-md hover:border-border;
+  }
+
+  /* Subtle gradient backgrounds */
+  .bg-gradient-subtle {
+    @apply bg-gradient-to-br from-background to-card;
+  }
+
+  /* Status indicator dot */
+  .status-dot {
+    @apply w-2 h-2 rounded-full;
   }
 }
 
+/* Reduce grain texture intensity for cleaner look */
 .grain-texture::before {
   content: '';
   position: fixed;
@@ -110,7 +128,7 @@
   width: 100%;
   height: 100%;
   background-image: url('https://grainy-gradients.vercel.app/noise.svg');
-  opacity: 0.2;
+  opacity: 0.08;
   mix-blend-mode: overlay;
   pointer-events: none;
   z-index: 50;
@@ -152,9 +170,44 @@
 
 /* Light mode enhancements */
 .light .glass-card {
-  @apply bg-white/80 backdrop-blur-xl border border-slate-200/60 shadow-sm;
+  @apply bg-white backdrop-blur-xl border border-border shadow-sm;
 }
 
 .light .glow-primary {
-  box-shadow: 0 0 20px rgba(59, 130, 246, 0.15);
+  box-shadow: none;
+}
+
+/* Light mode sidebar */
+.light aside {
+  @apply bg-white;
+}
+
+/* Light mode header */
+.light header {
+  @apply bg-white/95;
+}
+
+/* Smooth scrollbar styling */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: hsl(var(--muted));
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: hsl(var(--muted-foreground));
+}
+
+/* Focus styles for accessibility */
+*:focus-visible {
+  outline: 2px solid hsl(var(--ring));
+  outline-offset: 2px;
 }
