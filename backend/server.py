@@ -11,9 +11,10 @@ from routes import (
     vulnerability_router,
     scan_router,
     ai_pattern_router,
-    pull_request_router,
     activity_router,
-    dashboard_router
+    dashboard_router,
+    github_router,
+    websocket_router
 )
 
 # Configure logging
@@ -60,12 +61,15 @@ api_router.include_router(repository_router)
 api_router.include_router(vulnerability_router)
 api_router.include_router(scan_router)
 api_router.include_router(ai_pattern_router)
-api_router.include_router(pull_request_router)
 api_router.include_router(activity_router)
 api_router.include_router(dashboard_router)
+api_router.include_router(github_router)
 
 # Include API router
 app.include_router(api_router)
+
+# WebSocket router (not under /api prefix)
+app.include_router(websocket_router)
 
 @app.get('/')
 async def root():
@@ -75,6 +79,26 @@ async def root():
 async def health():
     return {'status': 'healthy'}
 
+@app.get('/api/health')
+async def api_health():
+    """Health check endpoint for API (used by GitHub Actions webhook validation)"""
+    return {
+        'status': 'healthy',
+        'service': 'fixora-api',
+        'version': '1.0.0'
+    }
+
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("server:app", reload=True)
+    import os
+    
+    # Get port from environment variable (Render sets this)
+    port = int(os.environ.get("PORT", 8000))
+    
+    # Bind to 0.0.0.0 so Render can detect the service
+    uvicorn.run(
+        "server:app",
+        host="0.0.0.0",
+        port=port,
+        reload=False  # Disable reload in production
+    )

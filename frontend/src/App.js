@@ -13,6 +13,7 @@ import VulnerabilityFeed from './pages/VulnerabilityFeed';
 import AIKnowledgeBase from './pages/AIKnowledgeBase';
 import ActivityLog from './pages/ActivityLog';
 import Settings from './pages/Settings';
+import GitHubCallback from './pages/GitHubCallback';
 import './App.css';
 
 const PrivateRoute = ({ children }) => {
@@ -53,6 +54,7 @@ function App() {
           <Route path="/ai-knowledge" element={<PrivateRoute><AIKnowledgeBase /></PrivateRoute>} />
           <Route path="/activity" element={<PrivateRoute><ActivityLog /></PrivateRoute>} />
           <Route path="/settings" element={<PrivateRoute><Settings /></PrivateRoute>} />
+          <Route path="/api/auth/callback/github" element={<PrivateRoute><GitHubCallback /></PrivateRoute>} />
         </Routes>
       </BrowserRouter>
       <Toaster position="top-right" richColors />

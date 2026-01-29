@@ -28,6 +28,14 @@ class Settings(BaseSettings):
     github_client_id: str = os.environ.get('GITHUB_CLIENT_ID', '')
     github_client_secret: str = os.environ.get('GITHUB_CLIENT_SECRET', '')
     
+    # Backend URL for webhooks
+    backend_url: str = os.environ.get('BACKEND_URL', 'http://localhost:8000')
+    
+    # JWT Secret Key alias
+    @property
+    def jwt_secret_key(self) -> str:
+        return self.secret_key
+    
     class Config:
         env_file = '.env'
         case_sensitive = False

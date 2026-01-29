@@ -2,12 +2,29 @@
 
 An intelligent vulnerability scanning platform that uses AI to discover custom code patterns, classify vulnerabilities, and auto-generate fixes.
 
+## ⚠️ Important Setup Required
+
+**Setting up GitHub scanning:**
+
+1. **Configure GitHub App permissions:**
+   - Go to https://github.com/settings/apps/fixora26
+   - Permissions & events → Repository permissions
+   - Set **"Contents"** to **"Read and write"**
+   - Set **"Workflows"** to **"Read and write"**
+   - Save changes and reconnect GitHub in Fixora
+
+2. **Deploy backend to production:**
+   - Deploy to Render, Railway, Heroku, or similar
+   - Set `BACKEND_URL` environment variable to your production URL
+   - Backend must be publicly accessible for GitHub Actions webhooks
+
 ## Features
 
+- **GitHub Integration**: Connect repositories via GitHub App for automated scanning
 - **AI-Powered Discovery**: Automatically detect custom wrappers, sinks, and sources in your codebase
 - **Smart Classification**: Eliminate 85% of false positives using embedding-based analysis
-- **Auto-Fix Generation**: Generate secure code fixes and create pull requests automatically
-- **Real-time Scanning**: Scan repositories with live progress tracking
+- **Automated Scanning**: Security scans run via GitHub Actions with Semgrep
+- **Real-time Notifications**: Get notified when scans complete
 - **Multi-Repository Management**: Manage and monitor multiple repositories from a single dashboard
 - **AI Knowledge Base**: Review and verify AI-discovered patterns
 - **Comprehensive Activity Log**: Track all security events and user actions

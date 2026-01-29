@@ -92,22 +92,6 @@ export const api = {
     return response.data;
   },
   
-  // Pull Requests
-  getPullRequests: async (repositoryId) => {
-    const params = repositoryId ? `?repository_id=${repositoryId}` : '';
-    const response = await axios.get(`${API}/pull-requests${params}`, { headers: getHeaders() });
-    return response.data;
-  },
-  
-  triggerAutoFix: async (prId) => {
-    const response = await axios.post(
-      `${API}/pull-requests/${prId}/auto-fix`,
-      {},
-      { headers: getHeaders() }
-    );
-    return response.data;
-  },
-  
   // Activity
   getActivityLog: async (limit = 50) => {
     const response = await axios.get(`${API}/activity?limit=${limit}`, { headers: getHeaders() });
@@ -117,6 +101,133 @@ export const api = {
   // Dashboard
   getDashboardStats: async () => {
     const response = await axios.get(`${API}/dashboard/stats`, { headers: getHeaders() });
+    return response.data;
+  },
+
+  // GitHub Integration
+  getGitHubAuthUrl: async () => {
+    const response = await axios.get(`${API}/github/auth`, { headers: getHeaders() });
+    return response.data;
+  },
+
+  handleGitHubCallback: async (code, state) => {
+    const response = await axios.post(
+      `${API}/github/callback`,
+      null,
+      { 
+        params: { code, state },
+        headers: getHeaders() 
+      }
+    );
+    return response.data;
+  },
+
+  getGitHubConnectionStatus: async () => {
+    const response = await axios.get(`${API}/github/status`, { headers: getHeaders() });
+    return response.data;
+  },
+
+  disconnectGitHub: async () => {
+    const response = await axios.delete(`${API}/github/disconnect`, { headers: getHeaders() });
+    return response.data;
+  },
+
+  getGitHubRepos: async () => {
+    const response = await axios.get(`${API}/github/repos`, { headers: getHeaders() });
+    return response.data;
+  },
+
+  connectGitHubRepos: async (repoIds) => {
+    const response = await axios.post(
+      `${API}/github/repos/connect`,
+      repoIds,
+      { headers: getHeaders() }
+    );
+    return response.data;
+  },
+
+  disconnectGitHubRepos: async (repoIds) => {
+    const response = await axios.post(
+      `${API}/github/repos/disconnect`,
+      repoIds,
+      { headers: getHeaders() }
+    );
+    return response.data;
+  },
+
+  // Repository Details - Branches & File Tree
+  getRepoBranches: async (repoId) => {
+    const response = await axios.get(`${API}/github/repos/${repoId}/branches`, { headers: getHeaders() });
+    return response.data;
+  },
+
+  getRepoFileTree: async (repoId, branch = 'main') => {
+    const response = await axios.get(
+      `${API}/github/repos/${repoId}/tree`,
+      { params: { branch }, headers: getHeaders() }
+    );
+    return response.data;
+  },
+
+  getRepoCommits: async (repoId, branch = 'main', limit = 20) => {
+    const response = await axios.get(
+      `${API}/github/repos/${repoId}/commits`,
+      { params: { branch, limit }, headers: getHeaders() }
+    );
+    return response.data;
+  },
+
+  // Scanning
+  setupRepoForScanning: async (repoId) => {
+    const response = await axios.post(
+      `${API}/github/repos/${repoId}/setup`,
+      {},
+      { headers: getHeaders() }
+    );
+    return response.data;
+  },
+
+  startGitHubScan: async (repoId, scanMode = 'full', branch = 'main', baseCommit = null) => {
+    const response = await axios.post(
+      `${API}/github/repos/${repoId}/scan`,
+      { scan_mode: scanMode, branch, base_commit: baseCommit },
+      { headers: getHeaders() }
+    );
+    return response.data;
+  },
+
+  refreshRepoSecrets: async (repoId) => {
+    const response = await axios.post(
+      `${API}/github/repos/${repoId}/refresh-secrets`,
+      {},
+      { headers: getHeaders() }
+    );
+    return response.data;
+  },
+
+  getRepoScans: async (repoId, limit = 10) => {
+    const response = await axios.get(
+      `${API}/github/repos/${repoId}/scans`,
+      { params: { limit }, headers: getHeaders() }
+    );
+    return response.data;
+  },
+
+  // Notifications
+  getNotifications: async (unreadOnly = true, limit = 20) => {
+    const response = await axios.get(
+      `${API}/scan/notifications`,
+      { params: { unread_only: unreadOnly, limit }, headers: getHeaders() }
+    );
+    return response.data;
+  },
+
+  markNotificationRead: async (notificationId) => {
+    const response = await axios.post(
+      `${API}/scan/notifications/${notificationId}/read`,
+      {},
+      { headers: getHeaders() }
+    );
     return response.data;
   }
 };
