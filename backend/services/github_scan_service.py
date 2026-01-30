@@ -542,16 +542,16 @@ Created: {datetime.now().isoformat()}
                     logger.error(f"Could not get SHA for workflow file in {owner}/{repo}")
                     return False
                 
-                # Delete the file
-                import json as json_module
-                response = await client.delete(
+                # Use client.request("DELETE", ...) because httpx.delete() doesn't support json body
+                response = await client.request(
+                    "DELETE",
                     f"{GITHUB_API_URL}/repos/{owner}/{repo}/contents/{WORKFLOW_FILE_PATH}",
-                    headers={**self.headers, "Content-Type": "application/json"},
-                    content=json_module.dumps({
+                    headers=self.headers,
+                    json={
                         "message": "chore: Remove Fixora scanning workflow (scan completed)",
                         "sha": sha,
                         "branch": default_branch
-                    })
+                    }
                 )
                 
                 if response.status_code in [200, 204]:
