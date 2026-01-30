@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { 
@@ -30,7 +30,7 @@ import {
 } from '../components/ui/dialog';
 import { api } from '../services/api';
 import { toast } from 'sonner';
-import { useWebSocket } from '../hooks/useWebSocket';
+import { getCookie } from '../utils/cookies';
 
 // File Tree Component with vulnerability indicators
 const FileTreeItem = ({ item, level = 0, vulnerabilitiesByFile = {}, onFileClick }) => {
@@ -250,12 +250,16 @@ const RepositoryDetail = () => {
       setSelectedBranch(branchData.default_branch || 'main');
       setScans(scanData);
       
-      // Check if there's a running scan
+      // DON'T auto-connect WebSocket for scans loaded from database
+      // Only create socket when user explicitly starts a NEW scan
+      // If there's a running scan, just show the UI state but don't connect socket
       const runningScan = scanData.find(s => s.status === 'running' || s.status === 'pending');
       if (runningScan) {
         setScanning(true);
         setScanProgress(runningScan.progress || 10);
         setCurrentScanId(runningScan.id);
+        // Note: WebSocket NOT connected here - it was already handled when scan started
+        // or the scan is stale (from previous session)
       }
     } catch (error) {
       toast.error('Failed to load repository details');
@@ -264,22 +268,95 @@ const RepositoryDetail = () => {
     }
   }, [id]);
   
-  // WebSocket for real-time notifications
-  const handleWebSocketMessage = useCallback((data) => {
-    if (data.type === 'scan_complete') {
-      const notification = data.notification;
-      
-      // Check if this notification is for our current scan
-      if (notification.data?.repository_id === id || notification.data?.scan_id === currentScanId) {
-        setScanning(false);
-        setScanProgress(100);
-        setCurrentScanId(null);
-        
-        toast.success(notification.message || 'Scan completed!');
-        fetchData();
-      }
+  // WebSocket ref for scan-specific connections
+  const scanWsRef = useRef(null);
+  const pingIntervalRef = useRef(null);
+  
+  // Function to connect WebSocket for a specific scan
+  const connectScanWebSocket = useCallback((scanId) => {
+    const token = getCookie('auth_token');
+    if (!token || !scanId) return;
+    
+    const backendUrl = process.env.REACT_APP_BACKEND_URL || 'http://localhost:8000';
+    const wsProtocol = backendUrl.startsWith('https') ? 'wss' : 'ws';
+    const wsHost = backendUrl.replace(/^https?:\/\//, '');
+    const wsUrl = `${wsProtocol}://${wsHost}/ws/notifications?token=${token}&scan_id=${scanId}`;
+    
+    console.log(`Opening WebSocket for scan ${scanId}`);
+    
+    // Close any existing connection
+    if (scanWsRef.current) {
+      scanWsRef.current.close();
     }
-  }, [id, currentScanId, fetchData]);
+    
+    const ws = new WebSocket(wsUrl);
+    scanWsRef.current = ws;
+    
+    ws.onopen = () => {
+      console.log(`WebSocket connected for scan ${scanId}`);
+      // Start ping interval
+      pingIntervalRef.current = setInterval(() => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'ping' }));
+        }
+      }, 30000);
+    };
+    
+    ws.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        
+        if (data.type === 'pong' || data.type === 'connected') return;
+        
+        if (data.type === 'scan_complete') {
+          const notification = data.notification;
+          
+          // Check if this notification is for our current scan
+          if (notification.data?.repository_id === id || notification.data?.scan_id === scanId) {
+            setScanning(false);
+            setScanProgress(100);
+            setCurrentScanId(null);
+            
+            toast.success(notification.message || 'Scan completed!');
+            fetchData();
+            
+            // The backend will close the socket, but we clean up our refs
+            console.log(`Scan ${scanId} completed, cleaning up WebSocket`);
+          }
+        }
+      } catch (error) {
+        console.error('WebSocket: Failed to parse message', error);
+      }
+    };
+    
+    ws.onclose = (event) => {
+      console.log(`WebSocket closed for scan ${scanId}:`, event.code, event.reason);
+      if (pingIntervalRef.current) {
+        clearInterval(pingIntervalRef.current);
+        pingIntervalRef.current = null;
+      }
+      scanWsRef.current = null;
+    };
+    
+    ws.onerror = (error) => {
+      console.error(`WebSocket error for scan ${scanId}:`, error);
+    };
+  }, [id, fetchData]);
+  
+  // Cleanup WebSocket on unmount
+  useEffect(() => {
+    return () => {
+      if (scanWsRef.current) {
+        scanWsRef.current.close();
+      }
+      if (pingIntervalRef.current) {
+        clearInterval(pingIntervalRef.current);
+      }
+    };
+  }, []);
+  
+  // DON'T auto-connect WebSocket based on currentScanId
+  // WebSocket is ONLY created when user explicitly starts a scan (in executeScan)
   
   // Define fetchFileTree and fetchCommits before they're used in useEffect
   const fetchFileTree = useCallback(async (branch) => {
@@ -304,8 +381,6 @@ const RepositoryDetail = () => {
       console.error('Failed to load commits:', error);
     }
   }, [id]);
-  
-  const { } = useWebSocket(handleWebSocketMessage);
 
   useEffect(() => {
     fetchData();
@@ -344,8 +419,11 @@ const RepositoryDetail = () => {
         toast.success('Scan started! You\'ll be notified when complete.');
         setScanProgress(10);
         
-        // Set current scan ID for WebSocket matching
+        // Set current scan ID - this triggers WebSocket connection via useEffect
         setCurrentScanId(result.scan_id);
+        
+        // Connect WebSocket immediately for this scan
+        connectScanWebSocket(result.scan_id);
         
         // Add to scans list
         setScans(prev => [{

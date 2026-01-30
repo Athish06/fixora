@@ -4,13 +4,28 @@ import { getCookie } from '../utils/cookies';
 const WS_RECONNECT_INTERVAL = 3000;
 const WS_MAX_RECONNECT_ATTEMPTS = 5;
 
-export function useWebSocket(onMessage) {
+/**
+ * Hook for WebSocket connections
+ * @param {Function} onMessage - Callback for incoming messages
+ * @param {Object} options - Configuration options
+ * @param {string} options.scanId - If provided, creates a scan-specific connection
+ * @param {boolean} options.autoConnect - Whether to connect automatically (default: true)
+ */
+export function useWebSocket(onMessage, options = {}) {
+  const { scanId = null, autoConnect = true } = options;
+  
   const [isConnected, setIsConnected] = useState(false);
   const [connectionError, setConnectionError] = useState(null);
   const wsRef = useRef(null);
   const reconnectAttemptsRef = useRef(0);
   const reconnectTimeoutRef = useRef(null);
   const pingIntervalRef = useRef(null);
+  const scanIdRef = useRef(scanId);
+
+  // Update scanId ref when it changes
+  useEffect(() => {
+    scanIdRef.current = scanId;
+  }, [scanId]);
 
   const getWsUrl = useCallback(() => {
     const token = getCookie('auth_token');
@@ -20,7 +35,14 @@ export function useWebSocket(onMessage) {
     const wsProtocol = backendUrl.startsWith('https') ? 'wss' : 'ws';
     const wsHost = backendUrl.replace(/^https?:\/\//, '');
     
-    return `${wsProtocol}://${wsHost}/ws/notifications?token=${token}`;
+    let url = `${wsProtocol}://${wsHost}/ws/notifications?token=${token}`;
+    
+    // Add scan_id if provided (for scan-specific connections)
+    if (scanIdRef.current) {
+      url += `&scan_id=${scanIdRef.current}`;
+    }
+    
+    return url;
   }, []);
 
   const connect = useCallback(() => {
@@ -139,14 +161,16 @@ export function useWebSocket(onMessage) {
     return false;
   }, []);
 
-  // Connect on mount, disconnect on unmount
+  // Connect on mount (if autoConnect), disconnect on unmount
   useEffect(() => {
-    connect();
+    if (autoConnect) {
+      connect();
+    }
 
     return () => {
       disconnect();
     };
-  }, [connect, disconnect]);
+  }, [connect, disconnect, autoConnect]);
 
   return {
     isConnected,
@@ -154,6 +178,40 @@ export function useWebSocket(onMessage) {
     connect,
     disconnect,
     sendMessage
+  };
+}
+
+/**
+ * Hook specifically for scan-related WebSocket connections
+ * Opens a connection when a scan starts, closes when scan completes
+ */
+export function useScanWebSocket(scanId, onScanComplete) {
+  const [scanResult, setScanResult] = useState(null);
+  
+  const handleMessage = useCallback((data) => {
+    if (data.type === 'scan_complete') {
+      setScanResult(data.notification);
+      if (onScanComplete) {
+        onScanComplete(data.notification);
+      }
+    }
+  }, [onScanComplete]);
+  
+  const ws = useWebSocket(handleMessage, {
+    scanId,
+    autoConnect: !!scanId // Only connect if scanId is provided
+  });
+  
+  // Connect when scanId becomes available
+  useEffect(() => {
+    if (scanId && !ws.isConnected) {
+      ws.connect();
+    }
+  }, [scanId, ws.isConnected, ws.connect]);
+  
+  return {
+    ...ws,
+    scanResult
   };
 }
 
