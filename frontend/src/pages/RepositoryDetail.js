@@ -254,7 +254,6 @@ const RepositoryDetail = () => {
       if (runningScan) {
         setScanning(true);
         setScanProgress(runningScan.progress || 10);
-        setCurrentScanId(runningScan.id);
         // Note: WebSocket NOT connected here - it was already handled when scan started
         // or the scan is stale (from previous session)
       }
@@ -312,7 +311,6 @@ const RepositoryDetail = () => {
           if (notification.data?.repository_id === id || notification.data?.scan_id === scanId) {
             setScanning(false);
             setScanProgress(100);
-            setCurrentScanId(null);
             
             toast.success(notification.message || 'Scan completed!');
             fetchData();
@@ -415,9 +413,6 @@ const RepositoryDetail = () => {
       if (result.success) {
         toast.success('Scan started! You\'ll be notified when complete.');
         setScanProgress(10);
-        
-        // Set current scan ID - this triggers WebSocket connection via useEffect
-        setCurrentScanId(result.scan_id);
         
         // Connect WebSocket immediately for this scan
         connectScanWebSocket(result.scan_id);

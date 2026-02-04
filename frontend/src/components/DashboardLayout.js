@@ -12,7 +12,6 @@ import {
   Menu,
   X,
   PanelLeftClose,
-  PanelLeft,
   ChevronRight
 } from 'lucide-react';
 import { useAuthStore } from '../store/authStore';
