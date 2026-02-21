@@ -1,5 +1,5 @@
 # GitHub Scanning Service - Implements the "Infection" mechanism
-# Creates shadow branches, injects secrets, and triggers Semgrep scans via GitHub Actions
+# Pushes workflows, injects secrets, and triggers scans via GitHub Actions
 
 import httpx
 import logging
@@ -15,6 +15,410 @@ settings = get_settings()
 
 GITHUB_API_URL = "https://api.github.com"
 WORKFLOW_FILE_PATH = ".github/workflows/fixora-scan.yml"
+WRAPPER_WORKFLOW_FILE_PATH = ".github/workflows/fixora-wrapper-hunter.yml"
+
+# ============== WRAPPER HUNTER WORKFLOW TEMPLATE ==============
+WRAPPER_HUNTER_TEMPLATE = '''name: Fixora Wrapper Hunter
+
+on:
+  repository_dispatch:
+    types: [fixora-wrapper-hunt]
+  workflow_dispatch:
+    inputs:
+      scan_id:
+        description: 'Fixora scan ID for tracking'
+        required: true
+      target_branch:
+        description: 'Branch to analyze'
+        required: true
+        default: 'main'
+
+jobs:
+  wrapper-hunt:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.client_payload.target_branch || github.event.inputs.target_branch }}
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Run Wrapper Hunter
+        run: |
+          cat > /tmp/wrapper_hunter.py << 'HUNTER_SCRIPT'
+          #!/usr/bin/env python3
+          import ast
+          import os
+          import re
+          import json
+
+          IGNORE_DIRS = {
+              "node_modules", "venv", ".venv", "env", ".env", ".git",
+              "__pycache__", "build", "dist", ".next", ".cache",
+              "coverage", ".tox", "egg-info", ".eggs", "site-packages",
+              ".github", ".vscode",
+          }
+
+          # ─── LANGUAGE DETECTION ───────────────────────────────────────────────────────
+          def detect_language(repo_root):
+              has_py = os.path.isfile(os.path.join(repo_root, "requirements.txt"))
+              has_js = os.path.isfile(os.path.join(repo_root, "package.json"))
+              if has_py and has_js:
+                  return "both"
+              if has_py:
+                  return "python"
+              if has_js:
+                  return "react"
+              for dirpath, dirnames, filenames in os.walk(repo_root):
+                  dirnames[:] = [d for d in dirnames if d not in IGNORE_DIRS]
+                  for fn in filenames:
+                      if fn.endswith(".py"):
+                          return "python"
+                      if fn.endswith((".js", ".jsx", ".ts", ".tsx")):
+                          return "react"
+              return "unknown"
+
+          # ─── MANIFEST PARSERS ─────────────────────────────────────────────────────────
+          def parse_requirements_txt(repo_root):
+              # Parse requirements.txt -> clean package names (strip >=, <=, ==, etc.)
+              pkgs = []
+              req_path = os.path.join(repo_root, "requirements.txt")
+              if not os.path.isfile(req_path):
+                  return pkgs
+              with open(req_path, "r", errors="ignore") as f:
+                  for line in f:
+                      line = line.strip()
+                      if not line or line.startswith(("#", "-", "git+", "http")):
+                          continue
+                      name = re.split(r"[><=!~;@\[#\s]", line)[0].strip()
+                      if name:
+                          pkgs.append(name.lower().replace("-", "_"))
+              return sorted(set(pkgs))
+
+          def parse_package_json(repo_root):
+              # Parse package.json -> all dependency names
+              pkgs = []
+              pj = os.path.join(repo_root, "package.json")
+              if not os.path.isfile(pj):
+                  return pkgs
+              try:
+                  with open(pj, "r", errors="ignore") as f:
+                      data = json.load(f)
+                  for key in ("dependencies", "devDependencies", "peerDependencies"):
+                      if key in data and isinstance(data[key], dict):
+                          pkgs.extend(data[key].keys())
+              except Exception:
+                  pass
+              return sorted(set(pkgs))
+
+          # ─── IMPORT COLLECTORS ────────────────────────────────────────────────────────
+          def collect_python_imports(repo_root):
+              # Walk all .py files; collect every top-level module name imported
+              found = set()
+              for dirpath, dirnames, filenames in os.walk(repo_root):
+                  dirnames[:] = [d for d in dirnames if d not in IGNORE_DIRS]
+                  for fn in filenames:
+                      if not fn.endswith(".py"):
+                          continue
+                      fp = os.path.join(dirpath, fn)
+                      try:
+                          with open(fp, "r", errors="ignore") as f:
+                              source = f.read()
+                          tree = ast.parse(source, filename=fp)
+                      except Exception:
+                          continue
+                      for node in ast.walk(tree):
+                          if isinstance(node, ast.Import):
+                              for alias in node.names:
+                                  found.add(alias.name.split(".")[0])
+                          elif isinstance(node, ast.ImportFrom):
+                              if node.module:
+                                  found.add(node.module.split(".")[0])
+              return sorted(found)
+
+          def collect_js_imports(repo_root):
+              # Walk all JS/TS files; collect every imported module name via import/require
+              found = set()
+              JS_EXTS = (".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs")
+              for dirpath, dirnames, filenames in os.walk(repo_root):
+                  dirnames[:] = [d for d in dirnames if d not in IGNORE_DIRS]
+                  for fn in filenames:
+                      if not any(fn.endswith(ext) for ext in JS_EXTS):
+                          continue
+                      fp = os.path.join(dirpath, fn)
+                      try:
+                          with open(fp, "r", errors="ignore") as f:
+                              source = f.read()
+                      except Exception:
+                          continue
+                      for m in re.finditer(r'import\s+(?:[^\\x22\\x27]*\s+from\s+)?[\\x22\\x27]([^\\x22\\x27]+)[\\x22\\x27]', source):
+                          mod = m.group(1)
+                          if not mod.startswith("."):
+                              found.add(mod.split("/")[0] if not mod.startswith("@") else "/".join(mod.split("/")[:2]))
+                      for m in re.finditer(r'require\s*\(\s*[\\x22\\x27]([^\\x22\\x27]+)[\\x22\\x27]\s*\)', source):
+                          mod = m.group(1)
+                          if not mod.startswith("."):
+                              found.add(mod.split("/")[0] if not mod.startswith("@") else "/".join(mod.split("/")[:2]))
+              return sorted(found)
+
+          # ─── PYTHON WRAPPER EXTRACTION (AST) ─────────────────────────────────────────
+          def _get_call_name(call_node):
+              func = call_node.func
+              if isinstance(func, ast.Name):
+                  return func.id
+              elif isinstance(func, ast.Attribute):
+                  parts = []
+                  node = func
+                  while isinstance(node, ast.Attribute):
+                      parts.append(node.attr)
+                      node = node.value
+                  if isinstance(node, ast.Name):
+                      parts.append(node.id)
+                  return ".".join(reversed(parts))
+              return None
+
+          def extract_python_wrappers(repo_root, all_modules):
+              # Find every function in .py files that calls any module from all_modules
+              wrappers = []
+              target = set(all_modules)
+              dangerous_builtins = {"eval", "exec", "__import__", "compile", "open", "globals", "locals"}
+              for dirpath, dirnames, filenames in os.walk(repo_root):
+                  dirnames[:] = [d for d in dirnames if d not in IGNORE_DIRS]
+                  for fn in filenames:
+                      if not fn.endswith(".py"):
+                          continue
+                      fp = os.path.join(dirpath, fn)
+                      try:
+                          with open(fp, "r", errors="ignore") as f:
+                              source = f.read()
+                          tree = ast.parse(source, filename=fp)
+                      except Exception:
+                          continue
+                      # Per-file: alias -> root module name
+                      imported_names = {}
+                      for node in ast.walk(tree):
+                          if isinstance(node, ast.Import):
+                              for alias in node.names:
+                                  root = alias.name.split(".")[0]
+                                  if root in target:
+                                      imported_names[alias.asname or alias.name.split(".")[0]] = root
+                          elif isinstance(node, ast.ImportFrom):
+                              module = (node.module or "").split(".")[0]
+                              if module in target:
+                                  for alias in node.names:
+                                      imported_names[alias.asname or alias.name] = module
+                      rel = os.path.relpath(fp, repo_root)
+                      for node in ast.walk(tree):
+                          if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                              calls_found = {}
+                              for child in ast.walk(node):
+                                  if isinstance(child, ast.Call):
+                                      call_str = _get_call_name(child)
+                                      if not call_str:
+                                          continue
+                                      root = call_str.split(".")[0]
+                                      if root in imported_names:
+                                          calls_found[call_str] = imported_names[root]
+                                      elif root in dangerous_builtins:
+                                          calls_found[call_str] = "builtins"
+                              if calls_found:
+                                  func_src = ast.get_source_segment(source, node) or ""
+                                  wrappers.append({
+                                      "function_name": node.name,
+                                      "file": rel,
+                                      "line_start": node.lineno,
+                                      "line_end": node.end_lineno,
+                                      "calls": list(calls_found.keys()),
+                                      "modules_used": list(set(calls_found.values())),
+                                      "source_code": func_src,
+                                  })
+              return wrappers
+
+          # ─── JS/REACT WRAPPER EXTRACTION (regex) ─────────────────────────────────────
+          def extract_js_wrappers(repo_root, all_modules):
+              # Find functions in JS/TS files that call any module from all_modules
+              wrappers = []
+              JS_EXTS = (".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs")
+              target = set(all_modules)
+              SKIP_NAMES = {"if", "for", "while", "switch", "catch", "constructor", "else", "try"}
+              for dirpath, dirnames, filenames in os.walk(repo_root):
+                  dirnames[:] = [d for d in dirnames if d not in IGNORE_DIRS]
+                  for fn in filenames:
+                      if not any(fn.endswith(ext) for ext in JS_EXTS):
+                          continue
+                      fp = os.path.join(dirpath, fn)
+                      try:
+                          with open(fp, "r", errors="ignore") as f:
+                              source = f.read()
+                      except Exception:
+                          continue
+                      # Build alias -> module map for modules in target
+                      alias_map = {}
+                      for m in re.finditer(r'import\s+(\w+)\s+from\s+[\\x22\\x27]([^\\x22\\x27]+)[\\x22\\x27]', source):
+                          raw_mod = m.group(2)
+                          mod = raw_mod.split("/")[0] if not raw_mod.startswith("@") else "/".join(raw_mod.split("/")[:2])
+                          if mod in target:
+                              alias_map[m.group(1)] = mod
+                      for m in re.finditer(r'import\s+\{([^}]+)\}\s+from\s+[\\x22\\x27]([^\\x22\\x27]+)[\\x22\\x27]', source):
+                          raw_mod = m.group(2)
+                          mod = raw_mod.split("/")[0] if not raw_mod.startswith("@") else "/".join(raw_mod.split("/")[:2])
+                          if mod in target:
+                              for part in m.group(1).split(","):
+                                  part = part.strip()
+                                  if " as " in part:
+                                      _, alias = part.split(" as ", 1)
+                                      alias_map[alias.strip()] = mod
+                                  else:
+                                      alias_map[part] = mod
+                      for m in re.finditer(r'(?:const|let|var)\s+(\w+)\s*=\s*require\s*\(\s*[\\x22\\x27]([^\\x22\\x27]+)[\\x22\\x27]\s*\)', source):
+                          raw_mod = m.group(2)
+                          mod = raw_mod.split("/")[0] if not raw_mod.startswith("@") else "/".join(raw_mod.split("/")[:2])
+                          if mod in target:
+                              alias_map[m.group(1)] = mod
+                      for m in re.finditer(r'(?:const|let|var)\s+\{([^}]+)\}\s*=\s*require\s*\(\s*[\\x22\\x27]([^\\x22\\x27]+)[\\x22\\x27]\s*\)', source):
+                          raw_mod = m.group(2)
+                          mod = raw_mod.split("/")[0] if not raw_mod.startswith("@") else "/".join(raw_mod.split("/")[:2])
+                          if mod in target:
+                              for part in m.group(1).split(","):
+                                  alias_map[part.strip()] = mod
+                      if not alias_map:
+                          continue
+                      rel = os.path.relpath(fp, repo_root)
+                      FUNC_RE = re.compile(
+                          r'(?:export\s+)?(?:async\s+)?function\s+(\w+)\s*\([^)]*\)\s*\{'
+                          r'|(?:const|let|var)\s+(\w+)\s*=\s*(?:async\s*)?\([^)]*\)\s*=>\s*\{'
+                          r'|(?:const|let|var)\s+(\w+)\s*=\s*(?:async\s+)?function\s*\([^)]*\)\s*\{'
+                      )
+                      for m in FUNC_RE.finditer(source):
+                          func_name = next((g for g in m.groups() if g), None)
+                          if not func_name or func_name in SKIP_NAMES:
+                              continue
+                          try:
+                              brace_pos = source.index("{", m.start())
+                          except ValueError:
+                              continue
+                          depth = 0
+                          end_pos = brace_pos
+                          for i in range(brace_pos, len(source)):
+                              if source[i] == "{":
+                                  depth += 1
+                              elif source[i] == "}":
+                                  depth -= 1
+                                  if depth == 0:
+                                      end_pos = i
+                                      break
+                          func_body = source[m.start():end_pos + 1]
+                          calls_found = {}
+                          for alias, mod in alias_map.items():
+                              for cm in re.finditer(r'\\b' + re.escape(alias) + r'\.(\w+)\s*\(', func_body):
+                                  calls_found[alias + "." + cm.group(1)] = mod
+                              if re.search(r'\\b' + re.escape(alias) + r'\s*\(', func_body):
+                                  if alias not in calls_found:
+                                      calls_found[alias] = mod
+                          if calls_found:
+                              line_start = source[:m.start()].count("\\n") + 1
+                              line_end = line_start + func_body.count("\\n")
+                              wrappers.append({
+                                  "function_name": func_name,
+                                  "file": rel,
+                                  "line_start": line_start,
+                                  "line_end": line_end,
+                                  "calls": list(calls_found.keys()),
+                                  "modules_used": list(set(calls_found.values())),
+                                  "source_code": func_body,
+                              })
+              return wrappers
+
+          # ─── ORCHESTRATOR ─────────────────────────────────────────────────────────────
+          def run_wrapper_hunter(repo_root="."):
+              lang = detect_language(repo_root)
+              results = {}
+              if lang in ("python", "both"):
+                  manifest_pkgs = parse_requirements_txt(repo_root)
+                  import_mods = collect_python_imports(repo_root)
+                  all_modules = sorted(set(manifest_pkgs) | set(import_mods))
+                  results["python"] = {
+                      "modules": {
+                          "from_manifest": manifest_pkgs,
+                          "from_imports": import_mods,
+                          "all": all_modules,
+                      },
+                      "wrapper_functions": extract_python_wrappers(repo_root, all_modules),
+                  }
+              if lang in ("react", "both"):
+                  manifest_pkgs = parse_package_json(repo_root)
+                  import_mods = collect_js_imports(repo_root)
+                  all_modules = sorted(set(manifest_pkgs) | set(import_mods))
+                  results["react"] = {
+                      "modules": {
+                          "from_manifest": manifest_pkgs,
+                          "from_imports": import_mods,
+                          "all": all_modules,
+                      },
+                      "wrapper_functions": extract_js_wrappers(repo_root, all_modules),
+                  }
+              return {"language": lang, "results": results}
+
+          if __name__ == "__main__":
+              output = run_wrapper_hunter(".")
+              with open("wrapper-hunter-results.json", "w") as f:
+                  json.dump(output, f, indent=2)
+              print(json.dumps(output, indent=2))
+          HUNTER_SCRIPT
+          python3 /tmp/wrapper_hunter.py
+
+      - name: Send Wrapper Hunter Results to Fixora
+        run: |
+          SCAN_ID="${{ github.event.client_payload.scan_id || github.event.inputs.scan_id }}"
+          
+          if [ -f wrapper-hunter-results.json ]; then
+            echo "Sending wrapper hunter results to Fixora backend..."
+            
+            # Build payload
+            jq -n --arg scan_id "$SCAN_ID" --arg repo "${{ github.repository }}" \\
+              --slurpfile results wrapper-hunter-results.json \\
+              '{scan_id: $scan_id, repository: $repo, wrapper_data: $results[0]}' > wh-payload.json
+            
+            MAX_RETRIES=3
+            RETRY_COUNT=0
+            
+            while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+              echo "Attempt $((RETRY_COUNT + 1))/$MAX_RETRIES..."
+              if curl -X POST "${{ secrets.FIXORA_API_URL }}/api/scan/webhook/wrapper-results" \\
+                -H "Content-Type: application/json" \\
+                -H "X-Fixora-Token: ${{ secrets.FIXORA_API_TOKEN }}" \\
+                -d @wh-payload.json \\
+                --max-time 30 \\
+                --retry 2 \\
+                --retry-delay 5; then
+                echo "\\n✅ Wrapper hunter results sent successfully"
+                exit 0
+              else
+                RETRY_COUNT=$((RETRY_COUNT + 1))
+                echo "⚠️  Attempt $RETRY_COUNT failed. Retrying..."
+                sleep 5
+              fi
+            done
+            
+            echo "❌ Failed to send wrapper hunter results after $MAX_RETRIES attempts"
+            exit 1
+          else
+            echo "⚠️  No wrapper hunter results file found"
+          fi
+
+      - name: Upload Wrapper Hunter Artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: wrapper-hunter-results
+          path: wrapper-hunter-results.json
+          retention-days: 7
+'''
 
 # Semgrep workflow template
 WORKFLOW_TEMPLATE = '''name: Fixora Security Scan
@@ -458,6 +862,137 @@ class GitHubScanService:
         except Exception as e:
             logger.error(f"Error deleting workflow file: {e}")
             return False
+    
+    async def push_wrapper_hunter_workflow(self, owner: str, repo: str, default_branch: str = "main") -> bool:
+        """Push the Wrapper Hunter workflow file to the DEFAULT branch"""
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                # Check if file already exists
+                check_response = await client.get(
+                    f"{GITHUB_API_URL}/repos/{owner}/{repo}/contents/{WRAPPER_WORKFLOW_FILE_PATH}",
+                    params={"ref": default_branch},
+                    headers=self.headers
+                )
+                
+                sha = None
+                if check_response.status_code == 200:
+                    sha = check_response.json().get("sha")
+                
+                content = base64.b64encode(WRAPPER_HUNTER_TEMPLATE.encode()).decode()
+                
+                payload = {
+                    "message": "chore: Add Fixora wrapper hunter workflow",
+                    "content": content,
+                    "branch": default_branch
+                }
+                
+                if sha:
+                    payload["sha"] = sha
+                
+                response = await client.put(
+                    f"{GITHUB_API_URL}/repos/{owner}/{repo}/contents/{WRAPPER_WORKFLOW_FILE_PATH}",
+                    headers=self.headers,
+                    json=payload
+                )
+                
+                if response.status_code in [200, 201]:
+                    logger.info(f"Pushed wrapper hunter workflow to {owner}/{repo} on branch {default_branch}")
+                    return True
+                else:
+                    logger.error(f"Failed to push wrapper hunter workflow: {response.text}")
+                    return False
+                    
+        except Exception as e:
+            logger.error(f"Error pushing wrapper hunter workflow: {e}")
+            return False
+    
+    async def delete_wrapper_hunter_workflow(self, owner: str, repo: str, default_branch: str = "main") -> bool:
+        """Delete the Wrapper Hunter workflow file after completion"""
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                check_response = await client.get(
+                    f"{GITHUB_API_URL}/repos/{owner}/{repo}/contents/{WRAPPER_WORKFLOW_FILE_PATH}",
+                    params={"ref": default_branch},
+                    headers=self.headers
+                )
+                
+                if check_response.status_code != 200:
+                    logger.info(f"Wrapper hunter workflow not found in {owner}/{repo}, nothing to delete")
+                    return True
+                
+                sha = check_response.json().get("sha")
+                if not sha:
+                    return False
+                
+                response = await client.request(
+                    "DELETE",
+                    f"{GITHUB_API_URL}/repos/{owner}/{repo}/contents/{WRAPPER_WORKFLOW_FILE_PATH}",
+                    headers=self.headers,
+                    json={
+                        "message": "chore: Remove Fixora wrapper hunter workflow (completed)",
+                        "sha": sha,
+                        "branch": default_branch
+                    }
+                )
+                
+                if response.status_code in [200, 204]:
+                    logger.info(f"Deleted wrapper hunter workflow from {owner}/{repo}")
+                    return True
+                else:
+                    logger.error(f"Failed to delete wrapper hunter workflow: {response.status_code} - {response.text}")
+                    return False
+                    
+        except Exception as e:
+            logger.error(f"Error deleting wrapper hunter workflow: {e}")
+            return False
+    
+    async def trigger_wrapper_hunter(
+        self,
+        owner: str,
+        repo: str,
+        scan_id: str,
+        target_branch: str = "main",
+        max_retries: int = 3
+    ) -> bool:
+        """Trigger the Wrapper Hunter workflow via repository_dispatch"""
+        import asyncio
+        
+        for attempt in range(max_retries):
+            try:
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    response = await client.post(
+                        f"{GITHUB_API_URL}/repos/{owner}/{repo}/dispatches",
+                        headers=self.headers,
+                        json={
+                            "event_type": "fixora-wrapper-hunt",
+                            "client_payload": {
+                                "scan_id": scan_id,
+                                "target_branch": target_branch
+                            }
+                        }
+                    )
+                    
+                    if response.status_code == 204:
+                        logger.info(f"Triggered wrapper hunter for {owner}/{repo} (scan_id: {scan_id})")
+                        return True
+                    elif response.status_code == 404:
+                        logger.warning(f"Wrapper hunter dispatch failed (attempt {attempt + 1}/{max_retries}): {response.text}")
+                        if attempt < max_retries - 1:
+                            await asyncio.sleep(3)
+                            continue
+                    else:
+                        logger.error(f"Failed to trigger wrapper hunter: {response.status_code} - {response.text}")
+                        return False
+                        
+            except Exception as e:
+                logger.error(f"Error triggering wrapper hunter (attempt {attempt + 1}): {e}")
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(2)
+                    continue
+                return False
+        
+        logger.error(f"Failed to trigger wrapper hunter after {max_retries} attempts")
+        return False
     
     async def trigger_workflow(
         self, 

@@ -23,6 +23,9 @@ class Settings(BaseSettings):
     # Hugging Face (will be set by user later)
     hf_token: str = os.environ.get('HF_TOKEN', '')
     hf_model_detection: str = os.environ.get('HF_MODEL_DETECTION', 'meta-llama/Llama-2-7b-chat-hf')
+
+    # Groq (free LLM API - get key at console.groq.com)
+    groq_api_key: str = os.environ.get('GROQ_API_KEY', '')
     
     # GitHub App
     github_client_id: str = os.environ.get('GITHUB_CLIENT_ID', '')
