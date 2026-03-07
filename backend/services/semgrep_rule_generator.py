@@ -43,6 +43,9 @@ LANG_TO_SEMGREP = {
     "react":  ["javascript", "typescript"],
 }
 
+# All JS-family key names the LLM might use regardless of instruction
+_JS_LANG_KEYS = {"react", "javascript", "js", "node", "nodejs", "typescript", "ts"}
+
 # Vulnerability type → OWASP Top 10 (2021) mapping
 VULN_TYPE_TO_OWASP: Dict[str, List[str]] = {
     "SQL Injection":        ["A03:2021"],
@@ -83,12 +86,13 @@ def generate_custom_rules(llm_result: Dict[str, Any]) -> str:
     rules: List[Dict[str, Any]] = []
     results = llm_result.get("results", {})
 
-    for lang_key in ("python", "react"):
-        section = results.get(lang_key)
-        if not section:
+    # Iterate every key the LLM returned — never hardcode ("python", "react").
+    # The LLM may use "javascript", "node", etc. for the JS section.
+    for lang_key, section in results.items():
+        if not section or not isinstance(section, dict):
             continue
 
-        semgrep_langs = LANG_TO_SEMGREP.get(lang_key, [lang_key])
+        semgrep_langs = _semgrep_langs_for_key(lang_key)
         wrapper_functions = section.get("wrapper_functions", [])
 
         for wrapper in wrapper_functions:
@@ -173,6 +177,7 @@ def _build_wrapper_rule(
         metadata["owasp"] = owasp
 
     # ── Build language-specific patterns matching the DEFINITION, not calls ──
+    # Any non-python key (react, javascript, node, etc.) uses JS patterns.
     if lang_key == "python":
         rule: Dict[str, Any] = {
             "id": rule_id,
@@ -187,16 +192,28 @@ def _build_wrapper_rule(
             "metadata": metadata,
         }
     else:
-        # JavaScript / TypeScript — cover standard forms:
+        # JavaScript / TypeScript — cover all common assignment forms:
         #   function name(...) { ... }
-        #   const name = (...) => { ... }
-        #   name(...) { ... }  (class method / object shorthand)
+        #   const/let/var name = (...) => { ... }
+        #   this.name = (...) => { ... }   ← NodeGoat / Express style
+        #   this.name = function(...) { ... }
+        #   name: (...) => { ... }          ← object property
+        #   name: function(...) { ... }
+        #   name(...) { ... }               ← class method shorthand
+        # Strip any accidental trailing () the Wrapper Hunter may have included.
+        clean_name = func_name.replace("()", "").strip()
         rule: Dict[str, Any] = {
             "id": rule_id,
             "pattern-either": [
-                {"pattern": f"function {func_name}(...) {{ ... }}"},
-                {"pattern": f"const {func_name} = (...) => {{ ... }}"},
-                {"pattern": f"{func_name}(...) {{ ... }}"},
+                {"pattern": f"function {clean_name}(...) {{ ... }}"},
+                {"pattern": f"const {clean_name} = (...) => {{ ... }}"},
+                {"pattern": f"let {clean_name} = (...) => {{ ... }}"},
+                {"pattern": f"var {clean_name} = (...) => {{ ... }}"},
+                {"pattern": f"this.{clean_name} = (...) => {{ ... }}"},
+                {"pattern": f"this.{clean_name} = function(...) {{ ... }}"},
+                {"pattern": f"{clean_name}: (...) => {{ ... }}"},
+                {"pattern": f"{clean_name}: function(...) {{ ... }}"},
+                {"pattern": f"{clean_name}(...) {{ ... }}"},
             ],
             "message": message,
             "severity": semgrep_severity,
@@ -215,8 +232,16 @@ def count_generated_rules(llm_result: Dict[str, Any]) -> int:
     """Quick count of how many rules would be generated (for logging/WS)."""
     results = llm_result.get("results", {})
     count = 0
-    for lang_key in ("python", "react"):
-        section = results.get(lang_key)
-        if section:
+    for section in results.values():
+        if section and isinstance(section, dict):
             count += len(section.get("wrapper_functions", []))
     return count
+
+
+def _semgrep_langs_for_key(lang_key: str) -> List[str]:
+    """Map any LLM language key to the correct Semgrep language list."""
+    if lang_key == "python":
+        return ["python"]
+    if lang_key.lower() in _JS_LANG_KEYS:
+        return ["javascript", "typescript"]
+    return [lang_key]
