@@ -6,6 +6,8 @@ import uuid
 import jwt
 import logging
 import asyncio
+import base64
+import json
 from datetime import datetime
 from config.database import get_database
 from config.settings import get_settings
@@ -63,7 +65,7 @@ class ScanWebhookPayload(BaseModel):
 class WrapperHunterPayload(BaseModel):
     scan_id: str
     repository: str
-    wrapper_data: Dict[str, Any]
+    encoded_data: str  # Base64-encoded JSON to bypass Cloudflare WAF
 
 
 @router.post('/webhook/wrapper-results')
@@ -82,7 +84,19 @@ async def receive_wrapper_hunter_results(
     5. Cleans up the wrapper hunter workflow file
     """
     logger.info(f"Received wrapper hunter results for scan {payload.scan_id}")
-    
+
+    # Decode the Base64-encoded payload (sent this way to avoid Cloudflare WAF blocking
+    # requests containing raw exploit-like strings such as eval(), exec(), SELECT etc.)
+    try:
+        decoded_bytes = base64.b64decode(payload.encoded_data)
+        wrapper_data = json.loads(decoded_bytes)
+    except Exception as e:
+        logger.error(f"Failed to decode base64 payload: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid encoded_data: must be a base64-encoded JSON string"
+        )
+
     try:
         # Validate the token
         decoded = jwt.decode(
@@ -115,7 +129,7 @@ async def receive_wrapper_hunter_results(
     logger.info("=" * 80)
     logger.info("WRAPPER HUNTER RESULTS RECEIVED:")
     logger.info("=" * 80)
-    logger.info(str(payload.wrapper_data)[:2000])  # truncated log
+    logger.info(str(wrapper_data)[:2000])  # truncated log
     logger.info("=" * 80)
     
     # Send WebSocket update: wrapper hunter results received
@@ -133,7 +147,7 @@ async def receive_wrapper_hunter_results(
             "status": "running",
             "progress": 30,
             "phase": "llm_analysis",
-            "wrapper_data": payload.wrapper_data
+            "wrapper_data": wrapper_data
         }}
     )
 
@@ -144,7 +158,7 @@ async def receive_wrapper_hunter_results(
     background_tasks.add_task(
         _process_wrapper_results_in_background,
         payload.scan_id, payload.repository, repo_id, user_id,
-        payload.wrapper_data, scan, db
+        wrapper_data, scan, db
     )
 
     return {
