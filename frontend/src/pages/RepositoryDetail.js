@@ -353,20 +353,26 @@ const RepositoryDetail = () => {
           setEstimatedTimeRemaining(null);
         }
 
-        // LLM chunk progress (emitted after every single chunk)
+        // LLM chunk progress (emitted after every single chunk, and once after Phase 1)
         if (data.type === 'llm_chunk_progress') {
           const pct = data.total > 0
             ? Math.round(35 + (data.processed / data.total) * 10)
             : 35;
           setScanProgress(Math.min(pct, 44));
 
+          // Only update ETA when we have a real value (null = keep showing "Calculating...")
           const etaSec = data.estimated_seconds_remaining;
-          setEstimatedTimeRemaining(etaSec != null ? etaSec : null);
+          if (etaSec != null) setEstimatedTimeRemaining(etaSec);
 
-          let stageMsg = `AI analysis: ${data.processed}/${data.total} chunks`;
-          if (data.failed > 0) stageMsg += ` (${data.failed} failed)`;
-          if (data.manual_review > 0) stageMsg += ` (${data.manual_review} need review)`;
-          setScanStage(stageMsg);
+          // Preliminary Phase 1→2 transition message (chunk_idx === -1)
+          if (data.chunk_idx === -1) {
+            setScanStage(data.message || 'AI analysis: phase 1 complete, analysing functions...');
+          } else {
+            let stageMsg = `AI analysis: ${data.processed}/${data.total} chunks`;
+            if (data.failed > 0) stageMsg += ` (${data.failed} failed)`;
+            if (data.manual_review > 0) stageMsg += ` (${data.manual_review} need review)`;
+            setScanStage(stageMsg);
+          }
         }
         
         // LLM analysis completed
@@ -647,11 +653,15 @@ const RepositoryDetail = () => {
                       <div className="text-right">
                         <div className="text-2xl font-bold text-primary">{scanProgress}%</div>
                         <div className="text-xs text-muted-foreground">Complete</div>
-                        {estimatedTimeRemaining != null && estimatedTimeRemaining > 0 && scanProgress < 45 && (
+                        {scanProgress >= 35 && scanProgress < 45 && (
                           <div className="text-xs text-muted-foreground mt-1">
-                            ~{estimatedTimeRemaining >= 60
-                              ? `${Math.floor(estimatedTimeRemaining / 60)}m ${estimatedTimeRemaining % 60}s`
-                              : `${estimatedTimeRemaining}s`} remaining
+                            {estimatedTimeRemaining == null
+                              ? 'Calculating...'
+                              : estimatedTimeRemaining <= 0
+                                ? 'Almost done...'
+                                : `~${estimatedTimeRemaining >= 60
+                                  ? `${Math.floor(estimatedTimeRemaining / 60)}m ${estimatedTimeRemaining % 60}s`
+                                  : `${estimatedTimeRemaining}s`} remaining`}
                           </div>
                         )}
                       </div>
