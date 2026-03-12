@@ -205,6 +205,7 @@ const RepositoryDetail = () => {
   const [scans, setScans] = useState([]);
   const [commits, setCommits] = useState([]);
   const [selectedCommit, setSelectedCommit] = useState('');
+  const [estimatedTimeRemaining, setEstimatedTimeRemaining] = useState(null);
   
   // State for file-based vulnerability viewer
   const [selectedFileVulns, setSelectedFileVulns] = useState(null);
@@ -349,13 +350,35 @@ const RepositoryDetail = () => {
           console.log('LLM analysis started:', data.message);
           setScanProgress(35);
           setScanStage('AI analyzing wrappers...');
+          setEstimatedTimeRemaining(null);
+        }
+
+        // LLM chunk progress (emitted after every single chunk)
+        if (data.type === 'llm_chunk_progress') {
+          const pct = data.total > 0
+            ? Math.round(35 + (data.processed / data.total) * 10)
+            : 35;
+          setScanProgress(Math.min(pct, 44));
+
+          const etaSec = data.estimated_seconds_remaining;
+          setEstimatedTimeRemaining(etaSec != null ? etaSec : null);
+
+          let stageMsg = `AI analysis: ${data.processed}/${data.total} chunks`;
+          if (data.failed > 0) stageMsg += ` (${data.failed} failed)`;
+          if (data.manual_review > 0) stageMsg += ` (${data.manual_review} need review)`;
+          setScanStage(stageMsg);
         }
         
         // LLM analysis completed
         if (data.type === 'llm_analysis_complete') {
           console.log('LLM analysis complete:', data.message);
           setScanProgress(45);
-          setScanStage(`AI found ${data.custom_rules_count || 0} custom rule(s)`);
+          setEstimatedTimeRemaining(null);
+          let stageMsg = `AI found ${data.custom_rules_count || 0} custom rule(s)`;
+          if (data.manual_review_count > 0) {
+            stageMsg += ` (${data.manual_review_count} chunk(s) need manual review)`;
+          }
+          setScanStage(stageMsg);
         }
         
         // Semgrep scan started
@@ -383,6 +406,7 @@ const RepositoryDetail = () => {
               setScanning(false);
               setScanProgress(0);
               setScanStage('');
+              setEstimatedTimeRemaining(null);
               toast.success(notification.message || 'Scan completed!');
               fetchData(false); // Don't restore running scans after completion
             }, 2000);
@@ -477,6 +501,7 @@ const RepositoryDetail = () => {
     setScanning(true);
     setScanProgress(10);
     setScanStage('Starting wrapper hunter...');
+    setEstimatedTimeRemaining(null);
     
     try {
       const baseCommit = mode === 'diff' && selectedCommit ? selectedCommit : null;
@@ -622,6 +647,13 @@ const RepositoryDetail = () => {
                       <div className="text-right">
                         <div className="text-2xl font-bold text-primary">{scanProgress}%</div>
                         <div className="text-xs text-muted-foreground">Complete</div>
+                        {estimatedTimeRemaining != null && estimatedTimeRemaining > 0 && scanProgress < 45 && (
+                          <div className="text-xs text-muted-foreground mt-1">
+                            ~{estimatedTimeRemaining >= 60
+                              ? `${Math.floor(estimatedTimeRemaining / 60)}m ${estimatedTimeRemaining % 60}s`
+                              : `${estimatedTimeRemaining}s`} remaining
+                          </div>
+                        )}
                       </div>
                     </div>
                     

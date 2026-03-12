@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
-import { Brain, Code2, Shield, FileCode } from 'lucide-react';
+import { Brain, Code2, Shield, FileCode, Layers, AlertTriangle } from 'lucide-react';
 import DashboardLayout from '../components/DashboardLayout';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
 import { Badge } from '../components/ui/badge';
@@ -101,6 +101,92 @@ const AIKnowledgeBase = () => {
                         <span className="font-semibold text-primary">{record.rules_count ?? 0}</span>
                       </div>
                     </div>
+
+                    {/* Chunk processing stats */}
+                    {record.chunk_stats && record.chunk_stats.total_chunks > 0 && (
+                      <div className="mt-4 pt-3 border-t border-border">
+                        <div className="flex items-center gap-4 text-sm">
+                          <div className="flex items-center gap-2">
+                            <Layers className="w-4 h-4 text-purple-500" />
+                            <span className="text-muted-foreground">AI chunks:</span>
+                            <span className="font-semibold">
+                              {record.chunk_stats.succeeded}/{record.chunk_stats.total_chunks} passed
+                            </span>
+                          </div>
+                          {record.chunk_stats.failed > 0 && (
+                            <Badge variant="destructive" className="text-xs">
+                              {record.chunk_stats.failed} failed
+                            </Badge>
+                          )}
+                          {record.chunk_stats.manual_review > 0 && (
+                            <Badge variant="outline" className="text-xs border-yellow-500 text-yellow-600">
+                              {record.chunk_stats.manual_review} manual review
+                            </Badge>
+                          )}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Failed chunks detail */}
+                    {record.failed_chunks && record.failed_chunks.length > 0 && (
+                      <div className="mt-3 p-3 rounded-md bg-destructive/10 border border-destructive/20">
+                        <div className="flex items-center gap-2 mb-2">
+                          <AlertTriangle className="w-4 h-4 text-destructive" />
+                          <span className="text-sm font-medium text-destructive">
+                            {record.failed_chunks.length} chunk(s) failed after retries
+                          </span>
+                        </div>
+                        <div className="space-y-1.5">
+                          {record.failed_chunks.map((fc, i) => (
+                            <div key={i} className="text-xs text-muted-foreground">
+                              <span className="font-mono">
+                                Chunk {fc.chunk_index + 1} [{fc.lang}]
+                              </span>
+                              {' — '}
+                              {fc.function_names?.length > 0
+                                ? fc.function_names.slice(0, 5).join(', ')
+                                  + (fc.function_names.length > 5 ? ` +${fc.function_names.length - 5} more` : '')
+                                : 'unknown functions'}
+                              <span className="text-destructive/70 ml-1">
+                                ({fc.attempts} attempts — {fc.error || 'Unknown error'})
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Manual inspection required (413 Too Large) */}
+                    {record.manual_review_required && record.manual_review_required.length > 0 && (
+                      <div className="mt-3 p-3 rounded-md bg-yellow-500/10 border border-yellow-500/30">
+                        <div className="flex items-center gap-2 mb-2">
+                          <AlertTriangle className="w-4 h-4 text-yellow-600" />
+                          <span className="text-sm font-medium text-yellow-700 dark:text-yellow-400">
+                            Manual Inspection Required — {record.manual_review_required.length} chunk(s) too large for AI
+                          </span>
+                        </div>
+                        <p className="text-xs text-muted-foreground mb-2">
+                          These functions could not be analyzed by AI due to request size limits. Please review them manually for potential vulnerabilities.
+                        </p>
+                        <div className="space-y-1.5">
+                          {record.manual_review_required.map((mr, i) => (
+                            <div key={i} className="text-xs text-muted-foreground">
+                              <span className="font-mono">
+                                Chunk {mr.chunk_index + 1} [{mr.lang}]
+                              </span>
+                              {' — '}
+                              {mr.function_names?.length > 0
+                                ? mr.function_names.slice(0, 5).join(', ')
+                                  + (mr.function_names.length > 5 ? ` +${mr.function_names.length - 5} more` : '')
+                                : 'unknown functions'}
+                              <span className="text-yellow-600 dark:text-yellow-400 ml-1">
+                                ({mr.wrapper_count} function{mr.wrapper_count !== 1 ? 's' : ''})
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
                   </CardContent>
                 </Card>
               </motion.div>
