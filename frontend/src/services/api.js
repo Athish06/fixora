@@ -53,6 +53,11 @@ export const api = {
     const response = await axios.get(`${API}/ai-debug${params}`, { headers: getHeaders() });
     return response.data;
   },
+
+  getAIDebugById: async (debugId) => {
+    const response = await axios.get(`${API}/ai-debug/${debugId}`, { headers: getHeaders() });
+    return response.data;
+  },
   
   // Activity
   getActivityLog: async (limit = 50) => {

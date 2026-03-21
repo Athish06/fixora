@@ -2,11 +2,32 @@
 # Receives wrapper_hunter_results.json, returns sink_modules.json
 import logging
 import json
+import os
 from typing import Dict, Any, Optional
 from config.settings import get_settings
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
+
+ALLOWED_VULNERABILITY_TYPES = {
+    "SQL Injection",
+    "Command Injection",
+    "Path Traversal",
+    "XSS",
+    "SSRF",
+    "Insecure Deserialization",
+    "IDOR / Broken Access Control",
+    "Cryptographic Failure",
+    "Hardcoded Secret",
+    "Business Logic Flaw",
+    "Security Misconfiguration",
+}
+
+FRONTEND_IMPOSSIBLE_TYPES = {
+    "SQL Injection",
+    "Command Injection",
+    "Path Traversal",
+}
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PROMPT BUILDERS — 2-phase LLM analysis
@@ -55,7 +76,9 @@ def build_module_sink_prompt(lang_key: str, modules: Dict[str, Any]) -> str:
         "  • SSRF / open redirect\n"
         "  • Path traversal / arbitrary file read-write\n"
         "  • Insecure deserialization\n"
-        "  • XXE / template injection / prototype pollution\n\n"
+        "  • XXE / template injection / prototype pollution\n"
+        "  • Cryptographic failures (weak hashing, bad PRNG)\n"
+        "  • Hardcoded secrets and broken authentication gates\n\n"
         "Respond ONLY with valid JSON (no markdown, no extra text):\n"
         '{"sink_modules": ["mod1", "mod2", ...], "reason": "One sentence explanation"}\n\n'
         "If NO modules are sinks, respond:\n"
@@ -101,54 +124,39 @@ def build_function_chunk_prompt(
           "analysis_summary": "X vulnerable wrappers found."
         }
     """
-    lang_label  = "PYTHON PROJECT" if lang_key == "python" else "REACT / NODE.JS PROJECT"
     code_fence  = "python" if lang_key == "python" else "javascript"
-    lang_display = "Python" if lang_key == "python" else "JavaScript/React/Node.js"
-
-    # ── Sink context block ────────────────────────────────────────────────
-    if sink_modules:
-        sink_ctx = (
-            "=== KNOWN DANGEROUS SINK MODULES (identified in phase 1) ===\n"
-            f"Sinks: {', '.join(sink_modules)}\n"
-            f"Reason: {sink_reason or 'These modules expose dangerous APIs.'}\n\n"
-            "Focus especially on functions that pass user-supplied data to these sinks "
-            "WITHOUT proper sanitisation or parameterisation.\n\n"
-        )
-    else:
-        sink_ctx = (
-            "NOTE: No dangerous sink modules were pre-identified for this project. "
-            "Inspect each function on its own merits for any security vulnerability.\n\n"
-        )
 
     # ── Function list ─────────────────────────────────────────────────────
     func_parts = []
     for i, w in enumerate(wrappers, 1):
         calls        = [str(c) for c in (w.get("calls")        or []) if c is not None]
         modules_used = [str(m) for m in (w.get("modules_used") or []) if m is not None]
+        env = w.get("environment", "BACKEND")
+        auth = "YES" if w.get("has_auth_check", True) else "NO (Potential IDOR)"
         func_parts.append(
-            f"[{i}] {w.get('function_name', '?')} "
-            f"({w.get('file', '?')} L{w.get('line_start', '?')}-{w.get('line_end', '?')})\n"
+            f"[{i}] {w.get('function_name', '?')} ({w.get('file', '?')})\n"
+            f"    Environment : {env}\n"
+            f"    Auth Checks : {auth}\n"
             f"    calls       : {', '.join(calls)}\n"
             f"    modules_used: {', '.join(modules_used)}\n"
             f"    source:\n```{code_fence}\n{w.get('source_code', '')}\n```\n\n"
         )
 
     return (
-        "You are an expert application-security engineer performing static analysis.\n\n"
-        f"=== TASK ===\n"
-        f"Analyse the {lang_display} wrapper functions below.  "
-        "For each function, determine:\n"
-        "  • Does it pass user-controlled data to a dangerous sink WITHOUT sanitisation?\n"
-        "  • If YES → include it in the output with vulnerability_type, severity, reason.\n"
-        "  • If NO  → skip it entirely.\n\n"
-        "SEVERITY GUIDELINES:\n"
-        "  HIGH   – Direct path from user input to sink, no sanitisation\n"
-        "  MEDIUM – Partial sanitisation or indirect taint path\n"
-        "  LOW    – Theoretical risk, unlikely to be exploitable as-is\n\n"
-        + sink_ctx
-        + "RESPOND WITH ONLY VALID JSON. No markdown, no text outside the JSON.\n"
-        "IMPORTANT: Do NOT include \"source_code\" in your output — I already have it.\n"
-        "Keep output compact so the full JSON fits within token limits.\n\n"
+        "You are an expert application-security engineer. Analyze these wrappers.\n\n"
+        "TAXONOMY GUIDELINES (STRICT ENUMERATION):\n"
+        "The 'vulnerability_type' MUST be exactly one of the following:\n"
+        "['SQL Injection', 'Command Injection', 'Path Traversal', 'XSS', 'SSRF', 'Insecure Deserialization', 'IDOR / Broken Access Control', 'Cryptographic Failure', 'Hardcoded Secret', 'Business Logic Flaw', 'Security Misconfiguration']\n\n"
+        "EXCLUSION RULES (CRITICAL):\n"
+        "1. FRONTEND RULE: If 'Environment' is 'BROWSER (Frontend)', it is MATHEMATICALLY IMPOSSIBLE for it to have SQL Injection, Command Injection, or Path Traversal. Ignore generic fetch() or console.log() calls here.\n"
+        "2. ORM RULE: Assume Supabase, Prisma, and TypeORM queries are perfectly parameterized by default. Do NOT flag them for SQLi.\n"
+        "3. IDOR CHECK: If the function updates/fetches database records but 'Auth Checks' is 'NO', you MUST flag it as 'IDOR / Broken Access Control'.\n"
+        "4. FORMAT STRINGS: In JavaScript/TypeScript, template literals (e.g., `console.log(`Error: ${err}`)`) are safe. Do NOT flag them as Unsafe Format Strings (this is a C/C++ concept).\n\n"
+        "SINK CONTEXT:\n"
+        f"Known sink modules: {', '.join(sink_modules) if sink_modules else 'none'}\n"
+        f"Sink reason: {sink_reason or 'No pre-identified sink context.'}\n\n"
+        "RESPOND WITH ONLY VALID JSON. No markdown, no text outside the JSON.\n"
+        "IMPORTANT: Do NOT include \"source_code\" in your output.\n"
         "Use this EXACT structure:\n\n"
         "{\n"
         '  "language": "<same as input>",\n'
@@ -171,32 +179,112 @@ def build_function_chunk_prompt(
         "}\n\n"
         f"If NO vulnerabilities are found return:\n"
         f'{{"language":"<lang>","results":{{"{lang_key}":{{"wrapper_functions":[]}}}},"analysis_summary":"No vulnerable wrappers found."}}\n\n'
-        f"=== {lang_label} WRAPPER FUNCTIONS ({len(wrappers)}) ===\n\n"
+        f"=== WRAPPER FUNCTIONS ({len(wrappers)}) ===\n\n"
         + "".join(func_parts)
     )
+
+
+def _normalize_vulnerability_type(value: Any) -> Optional[str]:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+
+    aliases = {
+        "sqli": "SQL Injection",
+        "sql injection": "SQL Injection",
+        "command injection": "Command Injection",
+        "path traversal": "Path Traversal",
+        "xss": "XSS",
+        "cross site scripting": "XSS",
+        "cross-site scripting": "XSS",
+        "ssrf": "SSRF",
+        "insecure deserialization": "Insecure Deserialization",
+        "idor": "IDOR / Broken Access Control",
+        "bola": "IDOR / Broken Access Control",
+        "idor / broken access control": "IDOR / Broken Access Control",
+        "broken access control": "IDOR / Broken Access Control",
+        "cryptographic failure": "Cryptographic Failure",
+        "hardcoded secret": "Hardcoded Secret",
+        "hardcoded secrets": "Hardcoded Secret",
+        "business logic flaw": "Business Logic Flaw",
+        "security misconfiguration": "Security Misconfiguration",
+    }
+
+    key = raw.lower()
+    normalized = aliases.get(key)
+    if normalized in ALLOWED_VULNERABILITY_TYPES:
+        return normalized
+    if raw in ALLOWED_VULNERABILITY_TYPES:
+        return raw
+    return None
+
+
+def _sanitize_llm_wrappers(chunk_wrappers: list, ai_wrappers: list) -> list:
+    """Enforce strict taxonomy and frontend exclusion rules on AI output."""
+    if not isinstance(ai_wrappers, list):
+        return []
+
+    context_by_key = {}
+    for w in chunk_wrappers:
+        fn = str(w.get("function_name") or "").strip()
+        fp = str(w.get("file") or "").strip()
+        context_by_key[(fn, fp)] = w
+
+    cleaned = []
+    for row in ai_wrappers:
+        if not isinstance(row, dict):
+            continue
+
+        vuln_type = _normalize_vulnerability_type(row.get("vulnerability_type"))
+        if not vuln_type:
+            continue
+
+        fn = str(row.get("function_name") or "").strip()
+        fp = str(row.get("file") or "").strip()
+        ctx = context_by_key.get((fn, fp), {})
+        env = str(ctx.get("environment") or "BACKEND")
+
+        if env == "BROWSER (Frontend)" and vuln_type in FRONTEND_IMPOSSIBLE_TYPES:
+            continue
+
+        item = dict(row)
+        item["vulnerability_type"] = vuln_type
+        cleaned.append(item)
+
+    return cleaned
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # LLM CALLER (RATE-LIMITED SEQUENTIAL CHUNKING)
 # ─────────────────────────────────────────────────────────────────────────────
 
-MAX_RETRIES = 2                  # Retry attempts per chunk
+MAX_RETRIES = 3                  # Retry attempts per chunk (helps transient 429s)
 SOURCE_CODE_CHAR_LIMIT = 1500   # Max chars of source_code sent per function (~375 tokens)
 
-# ── Rate limiting (Groq free tier) ───────────────────────────────────────────
-GROQ_TPM_LIMIT = 6000           # Tokens-per-minute hard ceiling (Groq free tier)
-TOKEN_BUFFER = 0.80              # 20% safety buffer — never aim for the exact ceiling
-EFFECTIVE_TPM = int(GROQ_TPM_LIMIT * TOKEN_BUFFER)  # 4800 effective tokens per minute
-MAX_RPM = 3                      # Max requests per minute (conservative)
-RATE_LIMIT_BACKOFF = 120         # Seconds to wait on 429 (before jitter)
-RATE_LIMIT_JITTER_MAX = 15       # Max random jitter seconds added to backoff
+# ── Rate limiting (Groq) ─────────────────────────────────────────────────────
+# These defaults match the dashboard limits shown in your screenshots:
+# ~30 RPM and ~12K TPM for the selected model.
+GROQ_TPM_LIMIT = int(os.getenv("GROQ_TPM_LIMIT", "12000"))
+GROQ_RPM_LIMIT = int(os.getenv("GROQ_RPM_LIMIT", "30"))
+TOKEN_BUFFER = float(os.getenv("GROQ_TOKEN_BUFFER", "0.80"))
+EFFECTIVE_TPM = int(GROQ_TPM_LIMIT * TOKEN_BUFFER)  # default: 9600
+
+# Keep headroom under raw limits to reduce 429 risk during noisy periods.
+MAX_RPM = min(int(os.getenv("GROQ_MAX_RPM", "20")), GROQ_RPM_LIMIT)
+MIN_REQUEST_GAP_SECONDS = float(os.getenv("GROQ_MIN_REQUEST_GAP_SECONDS", "3"))
+
+# 429 handling: wait at least this long, but also honor remaining window time.
+RATE_LIMIT_BACKOFF = int(os.getenv("GROQ_RATE_LIMIT_BACKOFF", "20"))
+RATE_LIMIT_JITTER_MAX = int(os.getenv("GROQ_RATE_LIMIT_JITTER_MAX", "10"))
 
 # ── Dynamic chunking ──────────────────────────────────────────────────────────
 # Estimated token cost of prompt overhead per chunk:
 # system message + module list headers + formatting (~600 tokens)
 PROMPT_OVERHEAD_TOKENS = 600
-# Token budget available for function content inside a single Groq request
-FUNCTION_BUDGET_PER_CHUNK = EFFECTIVE_TPM - PROMPT_OVERHEAD_TOKENS  # 4200
+# Token budget available for function content inside a single Groq request.
+# Keep this tied directly to effective TPM to preserve the original greedy
+# chunking behavior.
+FUNCTION_BUDGET_PER_CHUNK = EFFECTIVE_TPM - PROMPT_OVERHEAD_TOKENS
 
 
 def _estimate_function_tokens(func: dict) -> int:
@@ -383,6 +471,7 @@ async def analyze_wrappers_with_llm(
         "minute_start": time.monotonic(),
         "requests_this_minute": 0,
         "tokens_this_minute": 0,
+        "last_request_ts": 0.0,
     }
 
     # ── ETA tracking ──────────────────────────────────────────────────────
@@ -512,6 +601,7 @@ async def analyze_wrappers_with_llm(
                     # Merge vulnerable wrapper functions
                     new_wrappers = ai_output.get("wrapper_functions", [])
                     if isinstance(new_wrappers, list):
+                        new_wrappers = _sanitize_llm_wrappers(chunk, new_wrappers)
                         final_merged_result["results"][lang_key]["wrapper_functions"].extend(
                             new_wrappers
                         )
@@ -587,24 +677,48 @@ async def _rate_limit_wait(state: dict, estimated_tokens: int):
     import time
     import asyncio
 
-    elapsed = time.monotonic() - state["minute_start"]
-    if elapsed >= 60:
-        # Window expired — reset
-        state["minute_start"] = time.monotonic()
-        state["requests_this_minute"] = 0
-        state["tokens_this_minute"] = 0
+    if estimated_tokens > EFFECTIVE_TPM:
+        # Oversized estimates can happen for huge single-function chunks.
+        # Let the call proceed and rely on HTTP 413 handling instead of deadlocking.
+        logger.warning(
+            f"Estimated request ({estimated_tokens} tokens) exceeds effective TPM "
+            f"({EFFECTIVE_TPM}). Sending anyway and relying on 413/manual-review fallback."
+        )
         return
 
-    needs_wait = (
-        state["requests_this_minute"] >= MAX_RPM
-        or state["tokens_this_minute"] + estimated_tokens > EFFECTIVE_TPM
-    )
-    if needs_wait:
+    while True:
+        now = time.monotonic()
+
+        # Smooth pacing: avoid bursty back-to-back sends.
+        last_ts = state.get("last_request_ts", 0.0)
+        if last_ts > 0:
+            delta = now - last_ts
+            if delta < MIN_REQUEST_GAP_SECONDS:
+                gap_wait = MIN_REQUEST_GAP_SECONDS - delta
+                logger.info(f"Pacing gap: waiting {gap_wait:.1f}s before next request")
+                await asyncio.sleep(gap_wait)
+                continue
+
+        elapsed = now - state["minute_start"]
+        if elapsed >= 60:
+            # Window expired — reset
+            state["minute_start"] = now
+            state["requests_this_minute"] = 0
+            state["tokens_this_minute"] = 0
+            return
+
+        needs_wait = (
+            state["requests_this_minute"] >= MAX_RPM
+            or state["tokens_this_minute"] + estimated_tokens > EFFECTIVE_TPM
+        )
+        if not needs_wait:
+            return
+
         wait_time = max(0, 60 - elapsed)
         logger.info(
-            f"Rate limit: {state['requests_this_minute']} RPM / "
-            f"{state['tokens_this_minute']} TPM used — waiting {wait_time:.1f}s "
-            f"for next window"
+            f"Rate gate: {state['requests_this_minute']} RPM / "
+            f"{state['tokens_this_minute']} TPM used, next est={estimated_tokens} — "
+            f"waiting {wait_time:.1f}s for next window"
         )
         await asyncio.sleep(wait_time)
         state["minute_start"] = time.monotonic()
@@ -614,8 +728,11 @@ async def _rate_limit_wait(state: dict, estimated_tokens: int):
 
 def _record_request(state: dict, estimated_tokens: int):
     """Update the rate-limiter counters after a successful send."""
+    import time
+
     state["requests_this_minute"] += 1
     state["tokens_this_minute"] += estimated_tokens
+    state["last_request_ts"] = time.monotonic()
 
 
 async def _handle_429_backoff(state: dict):
@@ -626,12 +743,19 @@ async def _handle_429_backoff(state: dict):
     import asyncio
     import random
 
-    wait = RATE_LIMIT_BACKOFF + random.randint(1, RATE_LIMIT_JITTER_MAX)
-    logger.warning(f"Rate limited (429). Global backoff: {wait}s (120 + jitter)")
+    elapsed = time.monotonic() - state["minute_start"]
+    window_wait = max(0, 60 - elapsed)
+    jitter = random.randint(1, RATE_LIMIT_JITTER_MAX) if RATE_LIMIT_JITTER_MAX > 0 else 0
+    wait = max(RATE_LIMIT_BACKOFF, int(window_wait)) + jitter
+    logger.warning(
+        f"Rate limited (429). Backoff: {wait}s "
+        f"(base={RATE_LIMIT_BACKOFF}s, window={int(window_wait)}s, jitter={jitter}s)"
+    )
     await asyncio.sleep(wait)
     state["minute_start"] = time.monotonic()
     state["requests_this_minute"] = 0
     state["tokens_this_minute"] = 0
+    state["last_request_ts"] = 0.0
 
 
 async def _call_groq_module_phase(

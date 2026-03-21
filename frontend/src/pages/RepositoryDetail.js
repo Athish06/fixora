@@ -213,25 +213,45 @@ const RepositoryDetail = () => {
 
   // Debug / AI analysis state
   const [scanDebug, setScanDebug] = useState(null);
+  const [scanDebugRuns, setScanDebugRuns] = useState([]);
+  const [selectedDebugRunId, setSelectedDebugRunId] = useState('');
   const [loadingDebug, setLoadingDebug] = useState(false);
   const [debugError, setDebugError] = useState(null);
   const [copiedSection, setCopiedSection] = useState(null);
   const [debugInnerTab, setDebugInnerTab] = useState('wrapper');
   
-  const fetchScanDebug = useCallback(async () => {
+  const fetchScanDebug = useCallback(async (preferredDebugId = null) => {
     if (!id) return;
     setLoadingDebug(true);
     setDebugError(null);
     try {
-      const data = await api.getScanDebug(id);
+      const runs = await api.getAIDebug(id);
+      setScanDebugRuns(runs || []);
+
+      if (!runs || runs.length === 0) {
+        setScanDebug(null);
+        setSelectedDebugRunId('');
+        setDebugError('No scan debug data available yet. Run a scan first.');
+        return;
+      }
+
+      const candidateId = preferredDebugId || selectedDebugRunId || runs[0].id;
+      const targetId = runs.some((r) => r.id === candidateId) ? candidateId : runs[0].id;
+      const data = await api.getAIDebugById(targetId);
       setScanDebug(data);
+      setSelectedDebugRunId(targetId);
     } catch (err) {
       setDebugError(err?.response?.data?.detail || 'No scan debug data available yet. Run a scan first.');
       setScanDebug(null);
     } finally {
       setLoadingDebug(false);
     }
-  }, [id]);
+  }, [id, selectedDebugRunId]);
+
+  const handleDebugRunChange = useCallback((runId) => {
+    setSelectedDebugRunId(runId);
+    fetchScanDebug(runId);
+  }, [fetchScanDebug]);
 
   const copyToClipboard = useCallback((text, section) => {
     navigator.clipboard.writeText(text || '').then(() => {
@@ -966,13 +986,32 @@ const RepositoryDetail = () => {
                     AI Pipeline Debug
                   </h2>
                   <p className="text-sm text-muted-foreground mt-1">
-                    Full trace of Wrapper Hunter → Groq LLM → Semgrep rules for the latest scan
+                    Full trace of Wrapper Hunter → Groq LLM → Semgrep rules (scan-wise)
                   </p>
                 </div>
-                <Button variant="outline" size="sm" onClick={fetchScanDebug} disabled={loadingDebug}>
-                  {loadingDebug ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
-                  <span className="ml-2">Refresh</span>
-                </Button>
+                <div className="flex items-center gap-2">
+                  {!loadingDebug && scanDebugRuns.length > 0 && (
+                    <Select
+                      value={selectedDebugRunId || scanDebugRuns[0].id}
+                      onValueChange={handleDebugRunChange}
+                    >
+                      <SelectTrigger className="w-[320px]" data-testid="ai-debug-run-select">
+                        <SelectValue placeholder="Select debug run" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {scanDebugRuns.map((run) => (
+                          <SelectItem key={run.id} value={run.id}>
+                            {run.scan_id?.slice(0, 8)} • {new Date(run.created_at).toLocaleString()} • {run.vuln_wrapper_count ?? 0} wrappers
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  )}
+                  <Button variant="outline" size="sm" onClick={() => fetchScanDebug(selectedDebugRunId || null)} disabled={loadingDebug}>
+                    {loadingDebug ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
+                    <span className="ml-2">Refresh</span>
+                  </Button>
+                </div>
               </div>
 
               {/* Loading */}
@@ -1050,7 +1089,36 @@ const RepositoryDetail = () => {
                         {!wd ? (
                           <Card><CardContent className="py-10 text-center text-muted-foreground">No wrapper hunter data in this scan yet.</CardContent></Card>
                         ) : (
-                          Object.entries(wd.results || {}).map(([lang, section]) => (
+                          <>
+                            {Array.isArray(wd.scan_targets) && wd.scan_targets.length > 0 && (
+                              <Card className="border-border/60">
+                                <CardHeader className="pb-2 pt-4">
+                                  <CardTitle className="text-sm flex items-center gap-2">
+                                    <Database className="w-3.5 h-3.5" />
+                                    Scan Targets ({wd.scan_targets.length})
+                                  </CardTitle>
+                                  <CardDescription className="text-xs">
+                                    Wrapper Hunter executed per folder/language target to avoid monorepo cross-contamination
+                                  </CardDescription>
+                                </CardHeader>
+                                <CardContent className="space-y-2">
+                                  {wd.scan_targets.map((t, i) => (
+                                    <div key={`${t.language}-${t.scan_path || i}-${i}`} className="text-xs text-muted-foreground">
+                                      <span className="font-mono text-foreground">[{t.language}] {t.scan_path || t.root_path || '.'}</span>
+                                      {t.root_path && t.root_path !== t.scan_path && (
+                                        <span className="ml-1">(root: {t.root_path})</span>
+                                      )}
+                                      <span className="ml-1">• {t.wrapper_count ?? 0} wrapper{(t.wrapper_count ?? 0) !== 1 ? 's' : ''}</span>
+                                      {t.modules?.all && (
+                                        <span className="ml-1">• {t.modules.all.length} module{t.modules.all.length !== 1 ? 's' : ''}</span>
+                                      )}
+                                    </div>
+                                  ))}
+                                </CardContent>
+                              </Card>
+                            )}
+
+                            {Object.entries(wd.results || {}).map(([lang, section]) => (
                             <div key={lang} className="space-y-3">
                               <h3 className="font-semibold text-base flex items-center gap-2">
                                 <Terminal className="w-4 h-4 text-primary" />
@@ -1109,7 +1177,8 @@ const RepositoryDetail = () => {
                                 </CardContent>
                               </Card>
                             </div>
-                          ))
+                            ))}
+                          </>
                         )}
                       </div>
                     )}
@@ -1154,6 +1223,34 @@ const RepositoryDetail = () => {
                                 {llmR.error && <Badge variant="destructive" className="ml-auto">Error</Badge>}
                               </CardContent>
                             </Card>
+
+                            {Array.isArray(wd?.scan_targets) && wd.scan_targets.length > 0 && (
+                              <Card className="border-border/60">
+                                <CardHeader className="pb-2 pt-4">
+                                  <CardTitle className="text-sm">Folder / Language Result Breakdown</CardTitle>
+                                </CardHeader>
+                                <CardContent className="space-y-1.5">
+                                  {wd.scan_targets.map((t, i) => {
+                                    const langSection = llmR.results?.[t.language] || {};
+                                    const allFns = langSection.wrapper_functions || [];
+                                    const normalizedScan = (t.scan_path || '.').replace(/\\/g, '/');
+                                    const prefix = normalizedScan === '.'
+                                      ? ''
+                                      : `${normalizedScan.replace(/\/+$/, '')}/`;
+                                    const vulnCount = prefix
+                                      ? allFns.filter((fn) => (fn.file || '').replace(/\\/g, '/').startsWith(prefix)).length
+                                      : allFns.length;
+
+                                    return (
+                                      <div key={`${t.language}-${t.scan_path || i}-${i}`} className="text-xs text-muted-foreground">
+                                        <span className="font-mono text-foreground">[{t.language}] {t.scan_path || t.root_path || '.'}</span>
+                                        <span className="ml-1">• {vulnCount} vulnerable wrapper{vulnCount !== 1 ? 's' : ''}</span>
+                                      </div>
+                                    );
+                                  })}
+                                </CardContent>
+                              </Card>
+                            )}
 
                             {Object.entries(llmR.results || {}).map(([lang, section]) => (
                               <div key={lang} className="space-y-3">

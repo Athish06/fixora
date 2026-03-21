@@ -8,6 +8,8 @@ import logging
 import asyncio
 import base64
 import json
+import hashlib
+import re
 from datetime import datetime
 from config.database import get_database
 from config.settings import get_settings
@@ -23,6 +25,70 @@ from services.semgrep_rule_generator import generate_custom_rules, count_generat
 router = APIRouter(prefix='/scan', tags=['Scans'])
 logger = logging.getLogger(__name__)
 settings = get_settings()
+
+UNIFIED_VULN_CATEGORIES = [
+    "Injection (SQL/NoSQL/LDAP/Command/Path Traversal)",
+    "Broken Access Control (IDOR/BOLA)",
+    "Cross-Site Scripting (XSS)",
+    "Server-Side Request Forgery (SSRF)",
+    "Insecure Deserialization",
+    "Hardcoded Secrets / Credentials",
+    "Cryptographic Failures",
+    "Security Misconfiguration (CORS, Headers)",
+    "Insecure Design / Architecture",
+    "Business Logic Flaws",
+]
+
+VULN_TYPE_TO_CATEGORY = {
+    "SQL Injection": "Injection (SQL/NoSQL/LDAP/Command/Path Traversal)",
+    "Command Injection": "Injection (SQL/NoSQL/LDAP/Command/Path Traversal)",
+    "Path Traversal": "Injection (SQL/NoSQL/LDAP/Command/Path Traversal)",
+    "XSS": "Cross-Site Scripting (XSS)",
+    "SSRF": "Server-Side Request Forgery (SSRF)",
+    "Insecure Deserialization": "Insecure Deserialization",
+    "Hardcoded Secret": "Hardcoded Secrets / Credentials",
+    "Cryptographic Failure": "Cryptographic Failures",
+    "IDOR / Broken Access Control": "Broken Access Control (IDOR/BOLA)",
+    "Security Misconfiguration": "Security Misconfiguration (CORS, Headers)",
+    "Business Logic Flaw": "Business Logic Flaws",
+}
+
+_PLACEHOLDER_TEXT_RE = re.compile(
+    r"requires\s+logn|requires\s+login|unknown\s+vulnerability|security\s+issue",
+    flags=re.IGNORECASE,
+)
+
+
+def _normalize_rule_id_to_vuln_type(rule_id: str) -> str:
+    """Strict taxonomy normalizer driven by Semgrep check_id."""
+    if any(x in rule_id for x in ["sql", "sqli", "nosql"]):
+        return "SQL Injection"
+    if any(x in rule_id for x in ["command", "exec", "rce", "spawn"]):
+        return "Command Injection"
+    if any(x in rule_id for x in ["path-traversal", "lfi", "directory-traversal"]):
+        return "Path Traversal"
+    if "xss" in rule_id or "cross-site-scripting" in rule_id:
+        return "XSS"
+    if "ssrf" in rule_id:
+        return "SSRF"
+    if any(x in rule_id for x in ["deserialization", "pickle", "yaml.load"]):
+        return "Insecure Deserialization"
+    if any(x in rule_id for x in ["secret", "hardcoded", "password", "token", "key"]):
+        return "Hardcoded Secret"
+    if any(x in rule_id for x in ["crypto", "hash", "md5", "sha1", "cipher", "random", "jwt"]):
+        return "Cryptographic Failure"
+    if any(x in rule_id for x in ["idor", "bola", "authz", "access-control", "permission"]):
+        return "IDOR / Broken Access Control"
+    if any(x in rule_id for x in ["cors", "cookie", "config", "header"]):
+        return "Security Misconfiguration"
+    return "Business Logic Flaw"
+
+
+def _clean_placeholder_text(value: str, fallback: str) -> str:
+    text = str(value or "").strip()
+    if not text or _PLACEHOLDER_TEXT_RE.search(text):
+        return fallback
+    return text
 
 @router.get('/{scan_id}', response_model=ScanResult)
 async def get_scan_status(
@@ -331,6 +397,22 @@ async def _store_ai_debug(
         failed_chunks = []
         manual_review_required = []
         chunk_stats = {}
+        wrapper_targets_summary = []
+        orchestrator_meta = {}
+
+        if isinstance(wrapper_data, dict):
+            orchestrator_meta = wrapper_data.get("orchestrator", {}) or {}
+            raw_targets = wrapper_data.get("scan_targets", []) or []
+            for t in raw_targets:
+                modules = (t.get("modules", {}) or {}).get("all", []) or []
+                wrapper_targets_summary.append({
+                    "language": t.get("language"),
+                    "root_path": t.get("root_path"),
+                    "scan_path": t.get("scan_path"),
+                    "wrapper_count": t.get("wrapper_count", 0),
+                    "module_count": len(modules),
+                })
+
         if chunk_meta:
             chunk_stats = {
                 "total_chunks":    chunk_meta.get("total_chunks", 0),
@@ -364,6 +446,8 @@ async def _store_ai_debug(
             "vuln_wrapper_count": vuln_wrapper_count,
             "sink_module_count": sink_module_count,
             "rules_count": rules_count,
+            "wrapper_targets_summary": wrapper_targets_summary,
+            "orchestrator": orchestrator_meta,
             # Chunk processing stats
             "chunk_stats": chunk_stats,
             "failed_chunks": failed_chunks,
@@ -596,13 +680,61 @@ async def receive_scan_results(
     
     # Process Semgrep results
     semgrep_results = payload.results.results
-    vulnerabilities = []
+    new_vulnerabilities = []
+    current_scan_vulnerabilities = []
+    now_iso = datetime.now().isoformat()
     
     logger.info(f"Processing {len(semgrep_results)} Semgrep results")
+
+    # Build lookup maps for existing vulnerabilities in this repository so
+    # rescans update existing findings instead of creating duplicates.
+    existing_docs = await db.vulnerabilities.find(
+        {"repository_id": repo_id},
+        {
+            "_id": 0,
+            "id": 1,
+            "fingerprint": 1,
+            "rule_id": 1,
+            "file_path": 1,
+            "line_number": 1,
+            "end_line": 1,
+            "description": 1,
+        },
+    ).sort("created_at", 1).to_list(50000)
+
+    existing_by_fingerprint = {}
+    existing_by_legacy = {}
+    duplicate_doc_ids = []
+    canonical_by_key = {}
+    for doc in existing_docs:
+        legacy_key = (
+            f"{doc.get('rule_id', '')}|{doc.get('file_path', '')}|"
+            f"{doc.get('line_number', 0)}|{doc.get('end_line', 0)}|"
+            f"{(doc.get('description') or '').strip()}"
+        )
+        canonical_key = doc.get("fingerprint") or f"legacy::{legacy_key}"
+        if canonical_key in canonical_by_key:
+            duplicate_doc_ids.append(doc["id"])
+            continue
+
+        canonical_by_key[canonical_key] = doc
+        fp = doc.get("fingerprint")
+        if fp:
+            existing_by_fingerprint[fp] = doc
+        existing_by_legacy[legacy_key] = doc
+
+    if duplicate_doc_ids:
+        await db.vulnerabilities.delete_many({"id": {"$in": duplicate_doc_ids}})
+        logger.info(
+            f"Removed {len(duplicate_doc_ids)} pre-existing duplicate vulnerability record(s) "
+            f"for repository {repo_id} before processing scan {payload.scan_id}"
+        )
+
+    # De-duplicate repeated Semgrep entries inside the same webhook payload.
+    seen_in_this_scan = set()
+    updated_existing_count = 0
     
     for result in semgrep_results:
-        vuln_id = str(uuid.uuid4())
-        
         # Extract severity from Semgrep metadata
         extra = result.get("extra", {})
         metadata = extra.get("metadata", {})
@@ -620,46 +752,94 @@ async def receive_scan_results(
         }
         severity = severity_map.get(severity, "medium")
         
-        # Extract vulnerability type from rule_id or metadata
-        rule_id = result.get("check_id", "")
-        vuln_type = metadata.get("category", "security")
-        
-        # Try to extract a more specific type from rule_id
-        # e.g., "javascript.express.security.audit.xss" -> "XSS"
-        if "xss" in rule_id.lower():
-            vuln_type = "XSS"
-        elif "sql-injection" in rule_id.lower() or "sqli" in rule_id.lower():
-            vuln_type = "SQL Injection"
-        elif "command-injection" in rule_id.lower():
-            vuln_type = "Command Injection"
-        elif "path-traversal" in rule_id.lower():
-            vuln_type = "Path Traversal"
-        elif "ssrf" in rule_id.lower():
-            vuln_type = "SSRF"
-        elif "hardcoded" in rule_id.lower() or "secret" in rule_id.lower():
-            vuln_type = "Hardcoded Secret"
-        elif "csrf" in rule_id.lower():
-            vuln_type = "CSRF"
-        elif "open-redirect" in rule_id.lower():
-            vuln_type = "Open Redirect"
-        elif "insecure" in rule_id.lower():
-            vuln_type = "Insecure Configuration"
-        else:
-            # Use the last part of the rule_id as type
-            vuln_type = rule_id.split(".")[-1].replace("-", " ").title()
+        # Strict taxonomy normalization from Semgrep check_id
+        rule_id = result.get("check_id", "").lower()
+        metadata = extra.get("metadata", {})
+
+        vuln_type = _normalize_rule_id_to_vuln_type(rule_id)
+        category = VULN_TYPE_TO_CATEGORY.get(vuln_type, "Business Logic Flaws")
+
+        # Clean weird placeholders from Semgrep description text
+        description = extra.get("message", "No description available").replace("requires login", "").strip()
+        description = _clean_placeholder_text(
+            description,
+            f"Potential {vuln_type} detected. Review data flow and controls.",
+        )
+        file_path = result.get("path", "")
+        line_number = result.get("start", {}).get("line", 0)
+        end_line = result.get("end", {}).get("line", 0)
+
+        # Stable fingerprint to identify the same finding across multiple scans.
+        legacy_key = (
+            f"{rule_id}|{file_path}|{line_number}|{end_line}|{description.strip()}"
+        )
+        fingerprint = hashlib.sha256(legacy_key.encode("utf-8")).hexdigest()
+
+        if fingerprint in seen_in_this_scan:
+            continue
+        seen_in_this_scan.add(fingerprint)
+
+        existing = existing_by_fingerprint.get(fingerprint) or existing_by_legacy.get(legacy_key)
+
+        raw_title = result.get("check_id", "Unknown vulnerability").split(".")[-1].replace("-", " ").title()
+        title = _clean_placeholder_text(raw_title, vuln_type)
+        normalized_vuln = {
+            "severity": severity,
+            "type": vuln_type,
+            "category": category,
+            "title": title,
+        }
+
+        if existing:
+            await db.vulnerabilities.update_one(
+                {"id": existing["id"]},
+                {
+                    "$set": {
+                        "scan_id": payload.scan_id,
+                        "type": vuln_type,
+                        "category": category,
+                        "title": title,
+                        "description": description,
+                        "severity": severity,
+                        "file_path": file_path,
+                        "line_number": line_number,
+                        "end_line": end_line,
+                        "code_snippet": extra.get("lines", ""),
+                        "rule_id": rule_id,
+                        "cwe": metadata.get("cwe", []),
+                        "owasp": metadata.get("owasp", []),
+                        "fix_regex": extra.get("fix_regex", None),
+                        "status": "open",
+                        "branch": payload.branch,
+                        "commit_sha": payload.commit_sha,
+                        "fingerprint": fingerprint,
+                        "last_seen_at": now_iso,
+                        "last_scan_id": payload.scan_id,
+                    },
+                    "$addToSet": {
+                        "scan_ids": payload.scan_id,
+                    },
+                },
+            )
+            updated_existing_count += 1
+            current_scan_vulnerabilities.append(normalized_vuln)
+            # Backfill the fingerprint map for legacy records that lacked it.
+            existing_by_fingerprint[fingerprint] = {"id": existing["id"], "fingerprint": fingerprint}
+            continue
         
         vulnerability = {
-            "id": vuln_id,
+            "id": str(uuid.uuid4()),
             "repository_id": repo_id,
             "scan_id": payload.scan_id,
             "user_id": user_id,
             "type": vuln_type,
-            "title": result.get("check_id", "Unknown vulnerability").split(".")[-1].replace("-", " ").title(),
-            "description": extra.get("message", "No description available"),
+            "category": category,
+            "title": title,
+            "description": description,
             "severity": severity,
-            "file_path": result.get("path", ""),
-            "line_number": result.get("start", {}).get("line", 0),
-            "end_line": result.get("end", {}).get("line", 0),
+            "file_path": file_path,
+            "line_number": line_number,
+            "end_line": end_line,
             "code_snippet": extra.get("lines", ""),
             "rule_id": rule_id,
             "cwe": metadata.get("cwe", []),
@@ -669,27 +849,37 @@ async def receive_scan_results(
             "ai_verified": False,
             "ai_confidence": None,
             "ai_reasoning": None,
-            "created_at": datetime.now().isoformat(),
+            "created_at": now_iso,
             "branch": payload.branch,
-            "commit_sha": payload.commit_sha
+            "commit_sha": payload.commit_sha,
+            "fingerprint": fingerprint,
+            "scan_ids": [payload.scan_id],
+            "first_seen_at": now_iso,
+            "last_seen_at": now_iso,
+            "last_scan_id": payload.scan_id,
         }
         
-        vulnerabilities.append(vulnerability)
+        new_vulnerabilities.append(vulnerability)
+        current_scan_vulnerabilities.append(normalized_vuln)
+        existing_by_fingerprint[fingerprint] = {"id": vulnerability["id"], "fingerprint": fingerprint}
+        existing_by_legacy[legacy_key] = {"id": vulnerability["id"], "fingerprint": fingerprint}
     
-    # Insert vulnerabilities
-    if vulnerabilities:
-        result = await db.vulnerabilities.insert_many(vulnerabilities)
-        logger.info(f"Inserted {len(result.inserted_ids)} vulnerabilities into database")
-    else:
+    # Insert only genuinely new vulnerabilities; existing ones were updated in-place.
+    if new_vulnerabilities:
+        result = await db.vulnerabilities.insert_many(new_vulnerabilities)
+        logger.info(f"Inserted {len(result.inserted_ids)} new vulnerabilities into database")
+    if updated_existing_count:
+        logger.info(f"Updated {updated_existing_count} existing vulnerabilities from previous scans")
+    if not new_vulnerabilities and not updated_existing_count:
         logger.info("No vulnerabilities found in scan results")
     
-    # Update scan record
-    vuln_count = len(vulnerabilities)
+    # Update scan record using unique findings seen in THIS scan.
+    vuln_count = len(current_scan_vulnerabilities)
     severity_counts = {
-        "critical": len([v for v in vulnerabilities if v["severity"] == "critical"]),
-        "high": len([v for v in vulnerabilities if v["severity"] == "high"]),
-        "medium": len([v for v in vulnerabilities if v["severity"] == "medium"]),
-        "low": len([v for v in vulnerabilities if v["severity"] == "low"])
+        "critical": len([v for v in current_scan_vulnerabilities if v["severity"] == "critical"]),
+        "high": len([v for v in current_scan_vulnerabilities if v["severity"] == "high"]),
+        "medium": len([v for v in current_scan_vulnerabilities if v["severity"] == "medium"]),
+        "low": len([v for v in current_scan_vulnerabilities if v["severity"] == "low"])
     }
     
     await db.scans.update_one(
@@ -801,17 +991,7 @@ async def receive_scan_results(
                 except Exception as e:
                     logger.error(f"Error deleting Semgrep workflow: {e}")
 
-                # 2. Delete Wrapper Hunter workflow (.github/workflows/fixora-wrapper-hunter.yml)
-                try:
-                    ok = await service.delete_wrapper_hunter_workflow(owner, repo_name, default_branch)
-                    if ok:
-                        logger.info(f"✅ Deleted Wrapper Hunter workflow from {payload.repository}")
-                    else:
-                        logger.warning(f"⚠️  Wrapper Hunter workflow not deleted from {payload.repository}")
-                except Exception as e:
-                    logger.error(f"Error deleting Wrapper Hunter workflow: {e}")
-
-                # 3. Delete AI-generated custom rules (.fixora-rules.yml)
+                # 2. Delete AI-generated custom rules (.fixora-rules.yml)
                 try:
                     ok = await service.delete_custom_rules_file(owner, repo_name, default_branch)
                     if ok:

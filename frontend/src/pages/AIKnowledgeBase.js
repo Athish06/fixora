@@ -102,6 +102,24 @@ const AIKnowledgeBase = () => {
                       </div>
                     </div>
 
+                    {record.wrapper_targets_summary && record.wrapper_targets_summary.length > 0 && (
+                      <div className="mt-4 pt-3 border-t border-border">
+                        <p className="text-xs text-muted-foreground font-medium mb-2">
+                          Wrapper Hunter Targets ({record.wrapper_targets_summary.length})
+                        </p>
+                        <div className="space-y-1.5">
+                          {record.wrapper_targets_summary.map((t, i) => (
+                            <div key={`${t.language}-${t.scan_path || i}-${i}`} className="text-xs text-muted-foreground">
+                              <span className="font-mono text-foreground">[{t.language}] {t.scan_path || t.root_path || '.'}</span>
+                              <span className="ml-1">
+                                ({t.wrapper_count ?? 0} wrapper{(t.wrapper_count ?? 0) !== 1 ? 's' : ''}, {t.module_count ?? 0} module{(t.module_count ?? 0) !== 1 ? 's' : ''})
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
                     {/* Chunk processing stats */}
                     {record.chunk_stats && record.chunk_stats.total_chunks > 0 && (
                       <div className="mt-4 pt-3 border-t border-border">
