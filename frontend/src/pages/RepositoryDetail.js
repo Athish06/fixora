@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
+import ReactMarkdown from 'react-markdown';
 import { 
   ArrowLeft, GitBranch, FileCode, AlertTriangle, 
   Folder, ChevronRight, ChevronDown,
@@ -32,6 +33,79 @@ import {
 import { api } from '../services/api';
 import { toast } from 'sonner';
 import { getCookie } from '../utils/cookies';
+
+const UNIFIED_VULN_CATEGORIES = [
+  'Injection (SQL/NoSQL/LDAP/Command/Path Traversal)',
+  'Broken Access Control (IDOR/BOLA)',
+  'Cross-Site Scripting (XSS)',
+  'Server-Side Request Forgery (SSRF)',
+  'Insecure Deserialization',
+  'Hardcoded Secrets / Credentials',
+  'Cryptographic Failures',
+  'Security Misconfiguration (CORS, Headers)',
+  'Insecure Design / Architecture',
+  'Business Logic Flaws'
+];
+
+const TYPE_TO_CATEGORY = {
+  'SQL Injection': 'Injection (SQL/NoSQL/LDAP/Command/Path Traversal)',
+  'Command Injection': 'Injection (SQL/NoSQL/LDAP/Command/Path Traversal)',
+  'Path Traversal': 'Injection (SQL/NoSQL/LDAP/Command/Path Traversal)',
+  'IDOR / Broken Access Control': 'Broken Access Control (IDOR/BOLA)',
+  'XSS': 'Cross-Site Scripting (XSS)',
+  'SSRF': 'Server-Side Request Forgery (SSRF)',
+  'Insecure Deserialization': 'Insecure Deserialization',
+  'Hardcoded Secret': 'Hardcoded Secrets / Credentials',
+  'Cryptographic Failure': 'Cryptographic Failures',
+  'Security Misconfiguration': 'Security Misconfiguration (CORS, Headers)',
+  'Business Logic Flaw': 'Business Logic Flaws'
+};
+
+const PLACEHOLDER_TEXT_RE = /requires\s+logn|requires\s+login|unknown\s+vulnerability|security\s+issue|no\s+description\s+available/i;
+
+const normalizeType = (vuln) => {
+  const rawType = String(vuln?.type || '').trim();
+  if (rawType && TYPE_TO_CATEGORY[rawType]) return rawType;
+  if (/xss|cross[-\s]?site/i.test(rawType)) return 'XSS';
+  if (/ssrf|server[-\s]?side\s+request\s+forgery/i.test(rawType)) return 'SSRF';
+  if (/idor|bola|broken\s+access/i.test(rawType)) return 'IDOR / Broken Access Control';
+  if (/hardcoded|secret|credential/i.test(rawType)) return 'Hardcoded Secret';
+  if (/crypto|encrypt|cipher|hash/i.test(rawType)) return 'Cryptographic Failure';
+  if (/deserializ|xxe|xml[-\s]?external[-\s]?entity/i.test(rawType)) return 'Insecure Deserialization';
+  if (/command\s*injection|rce|exec/i.test(rawType)) return 'Command Injection';
+  if (/path\s*travers|lfi|directory[-\s]?traversal/i.test(rawType)) return 'Path Traversal';
+  if (/sql|sqli|nosql|ldap|xpath/i.test(rawType)) return 'SQL Injection';
+  if (/business|logic/i.test(rawType)) return 'Business Logic Flaw';
+  return 'Security Misconfiguration';
+};
+
+const normalizeCategory = (vuln, normalizedType) => {
+  const rawCategory = String(vuln?.category || '').trim();
+  if (UNIFIED_VULN_CATEGORIES.includes(rawCategory)) return rawCategory;
+  return TYPE_TO_CATEGORY[normalizedType] || 'Insecure Design / Architecture';
+};
+
+const normalizeText = (raw, fallback) => {
+  const value = String(raw || '').trim();
+  if (!value || PLACEHOLDER_TEXT_RE.test(value)) return fallback;
+  return value;
+};
+
+const MARKDOWN_COMPONENTS = {
+  h3: ({ children }) => <h3 className="text-base font-semibold text-foreground mb-2">{children}</h3>,
+  p: ({ children }) => <p className="text-sm text-muted-foreground leading-relaxed mb-2">{children}</p>,
+  strong: ({ children }) => <strong className="text-foreground font-semibold">{children}</strong>,
+  ul: ({ children }) => <ul className="list-disc list-inside space-y-1 text-sm text-muted-foreground mb-2">{children}</ul>,
+  ol: ({ children }) => <ol className="list-decimal list-inside space-y-1 text-sm text-muted-foreground mb-2">{children}</ol>,
+  li: ({ children }) => <li>{children}</li>,
+  code: ({ inline, children }) => {
+    if (inline) {
+      return <code className="rounded bg-muted px-1 py-0.5 text-xs text-foreground">{children}</code>;
+    }
+    return <code className="text-xs text-foreground">{children}</code>;
+  },
+  pre: ({ children }) => <pre className="bg-black/60 p-3 rounded-md overflow-x-auto mb-2">{children}</pre>,
+};
 
 // File Tree Component with vulnerability indicators
 const FileTreeItem = ({ item, level = 0, vulnerabilitiesByFile = {}, onFileClick }) => {
@@ -278,6 +352,34 @@ const RepositoryDetail = () => {
     });
     return grouped;
   }, [vulnerabilities]);
+
+  const normalizedVulnerabilities = useMemo(() => {
+    return vulnerabilities.map((vuln) => {
+      const type = normalizeType(vuln);
+      const category = normalizeCategory(vuln, type);
+      return {
+        ...vuln,
+        type,
+        category,
+        title: normalizeText(vuln.title, type),
+        description: normalizeText(
+          vuln.description,
+          `Potential ${type} detected. Review data flow and controls.`
+        ),
+        reason: normalizeText(
+          vuln.reason || vuln.ai_reasoning,
+          `Tagged as ${type} based on rule match and code context.`
+        ),
+      };
+    });
+  }, [vulnerabilities]);
+
+  const groupedVulnerabilities = useMemo(() => {
+    return UNIFIED_VULN_CATEGORIES.map((category) => ({
+      category,
+      items: normalizedVulnerabilities.filter((v) => v.category === category),
+    }));
+  }, [normalizedVulnerabilities]);
   
   // Handle file click in tree to show vulnerabilities
   const handleFileVulnClick = useCallback((filePath, vulns) => {
@@ -852,46 +954,80 @@ const RepositoryDetail = () => {
                 </CardContent>
               </Card>
             ) : (
-              vulnerabilities.map((vuln, index) => (
-                <motion.div
-                  key={vuln.id}
-                  initial={{ opacity: 0, y: 10 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ delay: index * 0.05 }}
-                >
-                  <Card className="hover:border-primary/30 transition-all" data-testid={`vuln-${index}`}>
-                    <CardHeader>
-                      <div className="flex items-start justify-between">
-                        <div>
-                          <CardTitle className="text-lg">{vuln.title}</CardTitle>
-                          <CardDescription>{vuln.file_path}:{vuln.line_number}</CardDescription>
-                        </div>
-                        <Badge variant={getSeverityColor(vuln.severity)}>
-                          {vuln.severity}
-                        </Badge>
+              groupedVulnerabilities.map((group, groupIndex) => (
+                <Card key={group.category} className="border-border/60" data-testid={`vuln-group-${groupIndex}`}>
+                  <CardHeader className="pb-3">
+                    <div className="flex items-center justify-between">
+                      <CardTitle className="text-base">{group.category}</CardTitle>
+                      <Badge variant={group.items.length > 0 ? 'secondary' : 'outline'}>
+                        {group.items.length} finding{group.items.length !== 1 ? 's' : ''}
+                      </Badge>
+                    </div>
+                  </CardHeader>
+                  <CardContent>
+                    {group.items.length === 0 ? (
+                      <p className="text-sm text-muted-foreground">No findings in this category.</p>
+                    ) : (
+                      <div className="space-y-3">
+                        {group.items.map((vuln, index) => (
+                          <motion.div
+                            key={vuln.id || `${group.category}-${index}`}
+                            initial={{ opacity: 0, y: 10 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            transition={{ delay: (groupIndex * 0.03) + (index * 0.02) }}
+                          >
+                            <Card className="hover:border-primary/30 transition-all" data-testid={`vuln-${groupIndex}-${index}`}>
+                              <CardHeader>
+                                <div className="flex items-start justify-between gap-3">
+                                  <div>
+                                    <CardTitle className="text-lg">{vuln.title}</CardTitle>
+                                    <CardDescription>
+                                      {vuln.file_path || 'unknown-file'}{vuln.line_number ? `:${vuln.line_number}` : ''}
+                                    </CardDescription>
+                                  </div>
+                                  <div className="flex items-center gap-2">
+                                    <Badge variant="outline">{vuln.type || 'Security Misconfiguration'}</Badge>
+                                    <Badge variant={getSeverityColor(vuln.severity)}>
+                                      {(vuln.severity || 'medium').toUpperCase()}
+                                    </Badge>
+                                  </div>
+                                </div>
+                              </CardHeader>
+                              <CardContent>
+                                <div className="mb-3 rounded-md border border-border/60 bg-muted/20 px-3 py-3">
+                                  <ReactMarkdown components={MARKDOWN_COMPONENTS}>
+                                    {vuln.description}
+                                  </ReactMarkdown>
+                                </div>
+                                {vuln.reason && vuln.reason !== vuln.description && (
+                                  <p className="text-xs text-muted-foreground mb-3">AI Analysis: {vuln.reason}</p>
+                                )}
+                                {vuln.code_snippet && (
+                                  <pre className="bg-black/50 p-4 rounded-md text-xs font-mono overflow-x-auto mb-3">
+                                    <code>{vuln.code_snippet}</code>
+                                  </pre>
+                                )}
+                                {vuln.ai_reasoning && (
+                                  <div className="bg-primary/10 border border-primary/20 p-3 rounded-md">
+                                    <p className="text-sm">
+                                      <span className="font-semibold text-primary">AI Analysis: </span>
+                                      {vuln.ai_reasoning}
+                                    </p>
+                                    {typeof vuln.ai_confidence === 'number' && (
+                                      <p className="text-xs text-muted-foreground mt-1">
+                                        Confidence: {(vuln.ai_confidence * 100).toFixed(0)}%
+                                      </p>
+                                    )}
+                                  </div>
+                                )}
+                              </CardContent>
+                            </Card>
+                          </motion.div>
+                        ))}
                       </div>
-                    </CardHeader>
-                    <CardContent>
-                      <p className="text-sm text-muted-foreground mb-4">{vuln.description}</p>
-                      {vuln.code_snippet && (
-                        <pre className="bg-black/50 p-4 rounded-md text-xs font-mono overflow-x-auto mb-4">
-                          <code>{vuln.code_snippet}</code>
-                        </pre>
-                      )}
-                      {vuln.ai_reasoning && (
-                        <div className="bg-primary/10 border border-primary/20 p-3 rounded-md">
-                          <p className="text-sm">
-                            <span className="font-semibold text-primary">AI Analysis: </span>
-                            {vuln.ai_reasoning}
-                          </p>
-                          <p className="text-xs text-muted-foreground mt-1">
-                            Confidence: {(vuln.ai_confidence * 100).toFixed(0)}%
-                          </p>
-                        </div>
-                      )}
-                    </CardContent>
-                  </Card>
-                </motion.div>
+                    )}
+                  </CardContent>
+                </Card>
               ))
             )}
           </TabsContent>
