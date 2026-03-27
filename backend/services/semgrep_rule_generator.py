@@ -177,7 +177,7 @@ def _build_wrapper_rule(
 
     wraps_text = ", ".join(calls) if calls else "dangerous sink calls"
 
-    # Dynamic impact mapping used in rich markdown output.
+    # 1. Dynamic Impact Mapping
     impact_map = {
         "SQL Injection": "Can leak the entire database, bypass authentication, or destroy critical records.",
         "Command Injection": "Allows an attacker to execute arbitrary OS commands, leading to full server compromise.",
@@ -185,24 +185,49 @@ def _build_wrapper_rule(
         "XSS": "Can steal user session cookies, hijack accounts, or deface the application.",
         "IDOR / Broken Access Control": "Allows attackers to view, edit, or delete private data belonging to other users.",
         "SSRF": "Can force the server to scan internal networks and bypass firewalls.",
-        "Insecure Deserialization": "Can lead to Remote Code Execution (RCE) via malicious payload injection.",
+        "Insecure Deserialization": "Can lead to Remote Code Execution (RCE) via malicious payload injection."
     }
     impact_text = impact_map.get(vuln_type, "Can allow attackers to bypass intended application logic.")
-    lang_ext = "python" if lang_key == "python" else "javascript"
 
+    # 2. Grab the AI's custom exploit
+    ai_exploit = str(wrapper.get("example_exploit", "")).strip()
+    generic_placeholder = (
+        not ai_exploit
+        or "malicious_payload" in ai_exploit.lower()
+        or "user_input" in ai_exploit.lower()
+    )
+    if generic_placeholder:
+        default_exploit_map = {
+            "SQL Injection": "bulk_insert(\"users; DROP TABLE users; --\", data)",
+            "Command Injection": "execute_background_task(\"ping -c 1 127.0.0.1; cat /etc/passwd\")",
+            "Path Traversal": "read_report(\"../../../../etc/passwd\")",
+            "XSS": "render_comment(\"<img src=x onerror=alert(document.cookie)>\")",
+            "SSRF": "fetch_remote(\"http://169.254.169.254/latest/meta-data/\")",
+            "Insecure Deserialization": "load_payload(\"gASV...crafted_pickle...\")",
+            "IDOR / Broken Access Control": "get_invoice(\"another-users-invoice-id\")",
+        }
+        ai_exploit = default_exploit_map.get(vuln_type, "invoke_wrapper(\"crafted attacker input\")")
+
+    if not ai_exploit.startswith("```"):
+        code_lang = "python" if lang_key == "python" else "javascript"
+        ai_exploit = f"```{code_lang}\\n{ai_exploit}\\n```"
+
+    attack_explanation = str(wrapper.get("attack_explanation", "")).strip()
+    if not attack_explanation:
+        attack_explanation = (
+            "The payload reaches the sink without strong validation, so the sink interprets attacker-controlled syntax "
+            "as executable instructions instead of inert data."
+        )
+
+    # 3. The markdown structure
     message = (
-        f"### [ALERT] {vuln_type} in `{func_name}()`\n\n"
-        f"**Mechanism:**\n"
-        f"This function takes untrusted input and passes it directly into `{wraps_text}` without adequate validation or sanitization.\n\n"
-        f"**Example Exploit:**\n"
-        f"```{lang_ext}\n"
-        f"// An attacker passes a malicious payload into the wrapper:\n"
-        f"{func_name}(malicious_payload)\n"
-        f"```\n\n"
-        f"**Data at Risk (Impact):**\n"
-        f"{impact_text}\n\n"
-        f"**AI Analysis:**\n"
-        f"{reason}"
+        f"### Alert: {vuln_type} in `{func_name}()`\n\n"
+        f"**Mechanism:**\nThis function takes untrusted input and passes it directly into `{wraps_text}` without adequate validation or sanitization.\n\n"
+        f"**Example Attack Vector:**\n"
+        f"{ai_exploit}\n\n"
+        f"**How The Attack Works:**\n{attack_explanation}\n\n"
+        f"**Data at Risk (Impact):**\n{impact_text}\n\n"
+        f"**AI Analysis:**\n{reason}"
     )
 
     metadata: Dict[str, Any] = {
@@ -220,21 +245,56 @@ def _build_wrapper_rule(
     if owasp:
         metadata["owasp"] = owasp
 
-    # ── Build language-specific patterns matching the DEFINITION, not calls ──
+    def _safe_ident(name: str) -> bool:
+        return bool(name) and name.replace("_", "a").isalnum() and not name[0].isdigit()
+
+    # Build sink call patterns from wrapper call metadata.
+    sink_patterns: List[Dict[str, str]] = []
+    seen_sink = set()
+    for raw_call in calls or []:
+        call = str(raw_call or "").strip().replace("()", "")
+        if not call:
+            continue
+        exact = f"{call}(...)"
+        if exact not in seen_sink:
+            sink_patterns.append({"pattern": exact})
+            seen_sink.add(exact)
+
+        method = call.split(".")[-1]
+        if _safe_ident(method):
+            wildcard = f"$OBJ.{method}(...)"
+            if wildcard not in seen_sink:
+                sink_patterns.append({"pattern": wildcard})
+                seen_sink.add(wildcard)
+            direct = f"{method}(...)"
+            if direct not in seen_sink:
+                sink_patterns.append({"pattern": direct})
+                seen_sink.add(direct)
+
+    # ── Build language-specific patterns ──
     # Any non-python key (react, javascript, node, etc.) uses JS patterns.
     if lang_key == "python":
-        rule: Dict[str, Any] = {
-            "id": rule_id,
-            # Match the function definition itself so Semgrep flags
-            # the vulnerable code block even for framework endpoints
-            # (FastAPI routes, Django views, etc.) that are never
-            # called explicitly in user code.
-            "pattern": f"def {func_name}(...):\n  ...",
-            "message": message,
-            "severity": semgrep_severity,
-            "languages": ["python"],
-            "metadata": metadata,
-        }
+        if sink_patterns:
+            rule = {
+                "id": rule_id,
+                "patterns": [
+                    {"pattern-inside": f"def {func_name}(...):\n  ..."},
+                    {"pattern-either": sink_patterns},
+                ],
+                "message": message,
+                "severity": semgrep_severity,
+                "languages": ["python"],
+                "metadata": metadata,
+            }
+        else:
+            rule = {
+                "id": rule_id,
+                "pattern": f"def {func_name}(...):\n  ...",
+                "message": message,
+                "severity": semgrep_severity,
+                "languages": ["python"],
+                "metadata": metadata,
+            }
     else:
         # JavaScript / TypeScript — build patterns based on whether the name
         # is a plain identifier or a dotted path (e.g. module.exports.userSearch).
@@ -248,10 +308,10 @@ def _build_wrapper_rule(
         clean_name = func_name.replace("()", "").strip()
         is_dotted = "." in clean_name
 
-        patterns = []
+        def_patterns = []
         if not is_dotted:
             # Simple identifier — all forms are valid JS
-            patterns += [
+            def_patterns += [
                 {"pattern": f"function {clean_name}(...) {{ ... }}"},
                 {"pattern": f"const {clean_name} = (...) => {{ ... }}"},
                 {"pattern": f"let {clean_name} = (...) => {{ ... }}"},
@@ -264,19 +324,32 @@ def _build_wrapper_rule(
             ]
         # Assignment patterns work for ANY name form, including dotted paths
         # like module.exports.userSearch = function(req, res) { ... }
-        patterns += [
+        def_patterns += [
             {"pattern": f"{clean_name} = (...) => {{ ... }}"},
             {"pattern": f"{clean_name} = function(...) {{ ... }}"},
         ]
 
-        rule: Dict[str, Any] = {
-            "id": rule_id,
-            "pattern-either": patterns,
-            "message": message,
-            "severity": semgrep_severity,
-            "languages": ["javascript", "typescript"],
-            "metadata": metadata,
-        }
+        if sink_patterns:
+            rule = {
+                "id": rule_id,
+                "patterns": [
+                    {"pattern-either": def_patterns},
+                    {"pattern-either": sink_patterns},
+                ],
+                "message": message,
+                "severity": semgrep_severity,
+                "languages": ["javascript", "typescript"],
+                "metadata": metadata,
+            }
+        else:
+            rule = {
+                "id": rule_id,
+                "pattern-either": def_patterns,
+                "message": message,
+                "severity": semgrep_severity,
+                "languages": ["javascript", "typescript"],
+                "metadata": metadata,
+            }
 
     return rule
 

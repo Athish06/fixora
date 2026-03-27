@@ -91,6 +91,13 @@ const normalizeText = (raw, fallback) => {
   return value;
 };
 
+const normalizeCodeSnippet = (raw) => {
+  const value = String(raw || '').trim();
+  if (!value) return '';
+  if (/^requires\s+log(?:in|n)$/i.test(value)) return '';
+  return value;
+};
+
 const MARKDOWN_COMPONENTS = {
   h3: ({ children }) => <h3 className="text-base font-semibold text-foreground mb-2">{children}</h3>,
   p: ({ children }) => <p className="text-sm text-muted-foreground leading-relaxed mb-2">{children}</p>,
@@ -104,7 +111,7 @@ const MARKDOWN_COMPONENTS = {
     }
     return <code className="text-xs text-foreground">{children}</code>;
   },
-  pre: ({ children }) => <pre className="bg-black/60 p-3 rounded-md overflow-x-auto mb-2">{children}</pre>,
+  pre: ({ children }) => <pre className="bg-muted/50 border border-border/70 p-3 rounded-md overflow-x-auto mb-2">{children}</pre>,
 };
 
 // File Tree Component with vulnerability indicators
@@ -370,6 +377,7 @@ const RepositoryDetail = () => {
           vuln.reason || vuln.ai_reasoning,
           `Tagged as ${type} based on rule match and code context.`
         ),
+        code_snippet: normalizeCodeSnippet(vuln.code_snippet),
       };
     });
   }, [vulnerabilities]);
@@ -1003,7 +1011,7 @@ const RepositoryDetail = () => {
                                   <p className="text-xs text-muted-foreground mb-3">AI Analysis: {vuln.reason}</p>
                                 )}
                                 {vuln.code_snippet && (
-                                  <pre className="bg-black/50 p-4 rounded-md text-xs font-mono overflow-x-auto mb-3">
+                                  <pre className="bg-muted/50 border border-border/70 p-4 rounded-md text-xs font-mono overflow-x-auto mb-3">
                                     <code>{vuln.code_snippet}</code>
                                   </pre>
                                 )}
@@ -1176,6 +1184,12 @@ const RepositoryDetail = () => {
                 const llmR = scanDebug.llm_result;
                 const yaml = scanDebug.custom_rules_yaml;
                 const prompt = scanDebug.llm_prompt;
+                const hasDetailedPrompt = Boolean(
+                  prompt
+                  && !prompt.includes('(2-phase analysis: module-sink prompt + per-chunk function prompts)')
+                  && !prompt.startsWith('(Truncated')
+                  && !prompt.startsWith('(No prompt snapshot available')
+                );
 
                 const severityColor = (s) => ({
                   HIGH:     'bg-red-500/15 text-red-400 border-red-500/30',
@@ -1201,7 +1215,7 @@ const RepositoryDetail = () => {
                     <div className="flex gap-2 flex-wrap">
                       {[
                         { key: 'wrapper', label: 'Wrapper Hunter', icon: Terminal },
-                        { key: 'prompt',  label: 'LLM Prompt',     icon: Code2 },
+                        ...(hasDetailedPrompt ? [{ key: 'prompt', label: 'LLM Prompt', icon: Code2 }] : []),
                         { key: 'llm',     label: 'LLM Result',     icon: Cpu },
                         { key: 'rules',   label: 'Semgrep Rules',  icon: Zap },
                       ].map(({ key, label, icon: Icon }) => (
@@ -1320,7 +1334,7 @@ const RepositoryDetail = () => {
                     )}
 
                     {/* ───── LLM PROMPT ───── */}
-                    {debugInnerTab === 'prompt' && (
+                    {debugInnerTab === 'prompt' && hasDetailedPrompt && (
                       <Card className="border-border/60">
                         <CardHeader className="pb-2 pt-4 flex flex-row items-center justify-between">
                           <CardTitle className="text-sm flex items-center gap-2"><Code2 className="w-3.5 h-3.5" /> Exact Prompt Sent to Groq LLM</CardTitle>
@@ -1624,10 +1638,10 @@ const RepositoryDetail = () => {
                   </CardHeader>
                   <CardContent className="pt-0 space-y-3">
                     <p className="text-sm text-muted-foreground">{vuln.description}</p>
-                    {vuln.code_snippet && (
+                    {normalizeCodeSnippet(vuln.code_snippet) && (
                       <div className="bg-muted rounded-md p-3 overflow-x-auto">
                         <pre className="text-xs font-mono whitespace-pre">
-                          {vuln.code_snippet}
+                          {normalizeCodeSnippet(vuln.code_snippet)}
                         </pre>
                       </div>
                     )}

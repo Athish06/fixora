@@ -10,7 +10,7 @@ import base64
 import json
 import hashlib
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from config.database import get_database
 from config.settings import get_settings
 from middleware.auth import get_current_user
@@ -19,7 +19,11 @@ from schemas.scan import ScanResult
 from services.activity_service import log_activity
 from services.websocket_manager import get_connection_manager
 from services.github_scan_service import GitHubScanService
-from services.llm_service import analyze_wrappers_with_llm
+from services.llm_service import (
+    analyze_wrappers_with_llm,
+    build_module_sink_prompt,
+    build_function_chunk_prompt,
+)
 from services.semgrep_rule_generator import generate_custom_rules, count_generated_rules
 
 router = APIRouter(prefix='/scan', tags=['Scans'])
@@ -58,6 +62,8 @@ _PLACEHOLDER_TEXT_RE = re.compile(
     flags=re.IGNORECASE,
 )
 
+_PLACEHOLDER_SNIPPET_RE = re.compile(r"^\s*requires\s+log(?:in|n)\s*$", flags=re.IGNORECASE)
+
 
 def _normalize_rule_id_to_vuln_type(rule_id: str) -> str:
     """Strict taxonomy normalizer driven by Semgrep check_id."""
@@ -89,6 +95,38 @@ def _clean_placeholder_text(value: str, fallback: str) -> str:
     if not text or _PLACEHOLDER_TEXT_RE.search(text):
         return fallback
     return text
+
+
+def _clean_code_snippet(value: str) -> Optional[str]:
+    text = str(value or "").strip()
+    if not text or _PLACEHOLDER_SNIPPET_RE.match(text):
+        return None
+    return text
+
+
+async def fail_timed_out_scans(db, timeout_minutes: int = 30) -> int:
+    """Mark long-running scans as failed if they exceed the timeout window."""
+    cutoff = datetime.now() - timedelta(minutes=timeout_minutes)
+    cutoff_iso = cutoff.isoformat()
+
+    result = await db.scans.update_many(
+        {
+            "status": {"$in": ["pending", "running"]},
+            "$or": [
+                {"started_at": {"$lte": cutoff_iso}},
+                {"created_at": {"$lte": cutoff_iso}},
+            ],
+        },
+        {
+            "$set": {
+                "status": "failed",
+                "error": "Scan timed out",
+                "phase": "timeout",
+                "completed_at": datetime.now().isoformat(),
+            }
+        },
+    )
+    return int(result.modified_count or 0)
 
 @router.get('/{scan_id}', response_model=ScanResult)
 async def get_scan_status(
@@ -186,10 +224,10 @@ async def receive_wrapper_hunter_results(
         logger.error(f"Invalid token: {str(e)}")
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
     
-    # Get the scan record
-    scan = await db.scans.find_one({"id": payload.scan_id})
+    # Get the scan record scoped to token-authorized repository
+    scan = await db.scans.find_one({"id": payload.scan_id, "repository_id": repo_id})
     if not scan:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Scan not found")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Scan not found or access denied")
     
     # ===== LOG WRAPPER HUNTER RESULTS =====
     logger.info("=" * 80)
@@ -253,8 +291,39 @@ async def _process_wrapper_results_in_background(
     """
     import json as json_module
     ws_manager = get_connection_manager()
+    stage = "llm_analysis"
+    llm_result = None
+    custom_rules_yaml = ""
 
     try:
+        if isinstance(wrapper_data, dict) and wrapper_data.get("error_type") == "repo_too_large":
+            limit_details = wrapper_data.get("limit_details") or []
+            detail_msg = "; ".join(
+                d.get("reason", "limit exceeded") for d in limit_details if isinstance(d, dict)
+            )
+            fail_msg = "Repository exceeds wrapper-hunter safety limits."
+            if detail_msg:
+                fail_msg = f"{fail_msg} {detail_msg}"
+
+            await db.scans.update_one(
+                {"id": scan_id},
+                {
+                    "$set": {
+                        "status": "failed",
+                        "phase": "failed_wrapper_hunter_limits",
+                        "error_message": fail_msg,
+                        "completed_at": datetime.utcnow(),
+                    }
+                },
+            )
+            await ws_manager.send_to_scan(scan_id, {
+                "type": "scan_failed",
+                "scan_id": scan_id,
+                "message": fail_msg,
+            })
+            logger.warning(f"[BG] Aborting scan {scan_id}: {fail_msg}")
+            return
+
         # ── LLM ANALYSIS ──────────────────────────────────────────────────────
         logger.info(f"[BG] Starting LLM analysis for scan {scan_id}")
         await ws_manager.send_to_scan(scan_id, {
@@ -317,6 +386,7 @@ async def _process_wrapper_results_in_background(
                 "custom_rules_yaml": custom_rules_yaml,
             }}
         )
+        stage = "store_ai_debug"
 
         # Build chunk summary for WebSocket
         failed_count = chunk_meta["failed"] if chunk_meta else 0
@@ -350,6 +420,7 @@ async def _process_wrapper_results_in_background(
             custom_rules_yaml, vuln_wrapper_count, sink_module_count, rules_count, db,
             chunk_meta=chunk_meta
         )
+        stage = "trigger_semgrep"
 
         # ── TRIGGER SEMGREP ──────────────────────────────────────────────────
         await _trigger_semgrep_after_wrapper_analysis(
@@ -359,14 +430,25 @@ async def _process_wrapper_results_in_background(
 
     except Exception as exc:
         logger.error(f"[BG] Error processing wrapper results for scan {scan_id}: {exc}")
+        failure_update = {
+            "status": "failed",
+            "error": str(exc),
+            "phase": f"failed_{stage}",
+            "completed_at": datetime.now().isoformat(),
+        }
+        if llm_result is not None:
+            failure_update["llm_result"] = llm_result
+        if custom_rules_yaml:
+            failure_update["custom_rules_yaml"] = custom_rules_yaml
+
         await db.scans.update_one(
             {"id": scan_id},
-            {"$set": {"status": "failed", "error": str(exc)}}
+            {"$set": failure_update}
         )
         await ws_manager.send_to_scan(scan_id, {
             "type": "scan_failed",
             "scan_id": scan_id,
-            "message": f"Error during AI analysis: {str(exc)}"
+            "message": f"Error during {stage}: {str(exc)}"
         })
 
 
@@ -389,9 +471,42 @@ async def _store_ai_debug(
     try:
         import json as _json
 
-        # Prompts are now built per-chunk in the 2-phase flow (build_module_sink_prompt /
-        # build_function_chunk_prompt) — no single combined prompt to store here.
-        llm_prompt = "(2-phase analysis: module-sink prompt + per-chunk function prompts)"
+        # Build detailed prompt snapshots for AI debug view.
+        prompt_sections: List[str] = []
+        if isinstance(wrapper_data, dict):
+            wd_results = wrapper_data.get("results", {}) or {}
+            llm_results = (llm_result or {}).get("results", {}) or {}
+
+            for lang_key, env_data in wd_results.items():
+                modules = (env_data or {}).get("modules", {}) or {}
+                wrappers = (env_data or {}).get("wrapper_functions", []) or []
+
+                sink_info = (llm_results.get(lang_key, {}) or {}).get("modules", {}) or {}
+                sink_modules = sink_info.get("sink_modules", []) or []
+                sink_reason = sink_info.get("reason", "") or ""
+
+                prompt_sections.append(f"=== {lang_key.upper()} : PHASE 1 MODULE-SINK PROMPT ===")
+                try:
+                    prompt_sections.append(build_module_sink_prompt(lang_key, modules))
+                except Exception as exc:
+                    prompt_sections.append(f"(Failed to build phase-1 prompt snapshot: {exc})")
+
+                prompt_sections.append(f"=== {lang_key.upper()} : PHASE 2 FUNCTION-CHUNK PROMPT (SAMPLE) ===")
+                try:
+                    sample_wrappers = wrappers[:2]
+                    prompt_sections.append(
+                        build_function_chunk_prompt(
+                            lang_key=lang_key,
+                            modules=modules,
+                            sink_modules=sink_modules,
+                            sink_reason=sink_reason,
+                            wrappers=sample_wrappers,
+                        )
+                    )
+                except Exception as exc:
+                    prompt_sections.append(f"(Failed to build phase-2 prompt snapshot: {exc})")
+
+        llm_prompt = "\n\n".join(prompt_sections).strip() or "(No prompt snapshot available for this scan)"
 
         # Extract failed chunk details and manual review items for dedicated storage
         failed_chunks = []
@@ -666,14 +781,14 @@ async def receive_scan_results(
             detail="Invalid token"
         )
     
-    # Get the scan record
-    scan = await db.scans.find_one({"id": payload.scan_id})
+    # Get the scan record scoped to token-authorized repository
+    scan = await db.scans.find_one({"id": payload.scan_id, "repository_id": repo_id})
     
     if not scan:
         logger.warning(f"Scan not found: {payload.scan_id}")
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Scan not found"
+            detail="Scan not found or access denied"
         )
     
     logger.info(f"Processing scan results for {payload.scan_id} - Repository: {payload.repository}, Branch: {payload.branch}")
@@ -752,15 +867,42 @@ async def receive_scan_results(
         }
         severity = severity_map.get(severity, "medium")
         
-        # Strict taxonomy normalization from Semgrep check_id
+        # Extract vulnerability type from rule_id or metadata
         rule_id = result.get("check_id", "").lower()
         metadata = extra.get("metadata", {})
 
-        vuln_type = _normalize_rule_id_to_vuln_type(rule_id)
+        # Trust exact AI classification for custom rules.
+        if "fixora-wrapper" in rule_id or "fixora-manual" in rule_id:
+            vuln_type = metadata.get("vulnerability_type", "Security Issue")
+        else:
+            if "xss" in rule_id:
+                vuln_type = "XSS"
+            elif "sql-injection" in rule_id or "sqli" in rule_id:
+                vuln_type = "SQL Injection"
+            elif "command-injection" in rule_id:
+                vuln_type = "Command Injection"
+            elif "path-traversal" in rule_id:
+                vuln_type = "Path Traversal"
+            elif "ssrf" in rule_id:
+                vuln_type = "SSRF"
+            elif "hardcoded" in rule_id or "secret" in rule_id:
+                vuln_type = "Hardcoded Secret"
+            elif "csrf" in rule_id:
+                vuln_type = "CSRF"
+            elif "open-redirect" in rule_id:
+                vuln_type = "Open Redirect"
+            elif "insecure" in rule_id:
+                vuln_type = "Security Misconfiguration"
+            else:
+                vuln_type = rule_id.split(".")[-1].replace("-", " ").title()
+
+        if vuln_type not in VULN_TYPE_TO_CATEGORY:
+            vuln_type = _normalize_rule_id_to_vuln_type(vuln_type)
         category = VULN_TYPE_TO_CATEGORY.get(vuln_type, "Business Logic Flaws")
 
         # Clean weird placeholders from Semgrep description text
-        description = extra.get("message", "No description available").replace("requires login", "").strip()
+        raw_description = str(extra.get("message", "No description available") or "")
+        description = re.sub(r"requires\s+log(?:in|n)", "", raw_description, flags=re.IGNORECASE).strip()
         description = _clean_placeholder_text(
             description,
             f"Potential {vuln_type} detected. Review data flow and controls.",
@@ -807,7 +949,7 @@ async def receive_scan_results(
                         "file_path": file_path,
                         "line_number": line_number,
                         "end_line": end_line,
-                        "code_snippet": extra.get("lines", ""),
+                        "code_snippet": _clean_code_snippet(extra.get("lines", "")),
                         "rule_id": rule_id,
                         "cwe": metadata.get("cwe", []),
                         "owasp": metadata.get("owasp", []),
@@ -844,7 +986,7 @@ async def receive_scan_results(
             "file_path": file_path,
             "line_number": line_number,
             "end_line": end_line,
-            "code_snippet": extra.get("lines", ""),
+            "code_snippet": _clean_code_snippet(extra.get("lines", "")),
             "rule_id": rule_id,
             "cwe": metadata.get("cwe", []),
             "owasp": metadata.get("owasp", []),

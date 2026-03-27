@@ -6,6 +6,11 @@ import os
 from typing import Dict, Any, Optional
 from config.settings import get_settings
 
+try:
+    import tiktoken
+except Exception:  # pragma: no cover
+    tiktoken = None
+
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
@@ -125,6 +130,13 @@ def build_function_chunk_prompt(
         }
     """
     code_fence  = "python" if lang_key == "python" else "javascript"
+    lang_display = "Python" if lang_key == "python" else "JavaScript/React/Node.js"
+    lang_label = "PYTHON" if lang_key == "python" else "JAVASCRIPT/REACT/NODE"
+    sink_ctx = (
+        "SINK CONTEXT:\n"
+        f"Known sink modules: {', '.join(sink_modules) if sink_modules else 'none'}\n"
+        f"Sink reason: {sink_reason or 'No pre-identified sink context.'}\n\n"
+    )
 
     # ── Function list ─────────────────────────────────────────────────────
     func_parts = []
@@ -143,20 +155,29 @@ def build_function_chunk_prompt(
         )
 
     return (
-        "You are an expert application-security engineer. Analyze these wrappers.\n\n"
-        "TAXONOMY GUIDELINES (STRICT ENUMERATION):\n"
-        "The 'vulnerability_type' MUST be exactly one of the following:\n"
-        "['SQL Injection', 'Command Injection', 'Path Traversal', 'XSS', 'SSRF', 'Insecure Deserialization', 'IDOR / Broken Access Control', 'Cryptographic Failure', 'Hardcoded Secret', 'Business Logic Flaw', 'Security Misconfiguration']\n\n"
-        "EXCLUSION RULES (CRITICAL):\n"
-        "1. FRONTEND RULE: If 'Environment' is 'BROWSER (Frontend)', it is MATHEMATICALLY IMPOSSIBLE for it to have SQL Injection, Command Injection, or Path Traversal. Ignore generic fetch() or console.log() calls here.\n"
-        "2. ORM RULE: Assume Supabase, Prisma, and TypeORM queries are perfectly parameterized by default. Do NOT flag them for SQLi.\n"
-        "3. VULNERABILITY HIERARCHY: If 'Auth Checks' is 'None detected', do NOT blindly flag it as IDOR. You MUST check for Injection first. If you see SQL string concatenation (SQLi), subprocess execution (Command Injection), os.remove/open (Path Traversal), or resolve_entities=True (XXE/Deserialization), you MUST flag the Injection flaw. Injection is always a higher priority than IDOR.\n"
-        "4. FORMAT STRINGS: In JavaScript/TypeScript, template literals (e.g., `console.log(`Error: ${err}`)`) are safe. Do NOT flag them as Unsafe Format Strings (this is a C/C++ concept).\n\n"
-        "SINK CONTEXT:\n"
-        f"Known sink modules: {', '.join(sink_modules) if sink_modules else 'none'}\n"
-        f"Sink reason: {sink_reason or 'No pre-identified sink context.'}\n\n"
-        "RESPOND WITH ONLY VALID JSON. No markdown, no text outside the JSON.\n"
-        "IMPORTANT: Do NOT include \"source_code\" in your output.\n"
+        "You are an expert application-security engineer performing static analysis.\n\n"
+        f"=== TASK ===\n"
+        f"Analyse the {lang_display} wrapper functions below.  "
+        "For each function, determine:\n"
+        "  - Does it pass user-controlled data to a dangerous sink WITHOUT sanitisation?\n"
+        "  - If YES -> include it in the output with vulnerability_type, severity, reason, example_exploit, and attack_explanation.\n"
+        "  - If NO  -> skip it entirely.\n\n"
+        "=== STRICT TAXONOMY & EXCLUSION RULES ===\n"
+        "1. ALLOWED CATEGORIES: You MUST classify vulnerabilities into exactly one of these types: ['SQL Injection', 'Command Injection', 'Path Traversal', 'XSS', 'SSRF', 'Insecure Deserialization', 'IDOR / Broken Access Control', 'Cryptographic Failure', 'Hardcoded Secret', 'Security Misconfiguration', 'Business Logic Flaw'].\n"
+        "2. BUSINESS LOGIC FLAWS: Only use this category for logic/workflow bypasses (e.g., skipping a payment step). Do NOT use this for injections.\n"
+        "3. SANITISATION RECOGNITION (CRITICAL): If the code uses strict Regex (e.g., `re.match`), explicit allowlists (e.g., `in ['jpg', 'png']`), or strict type casting (e.g., `int(user_id)`) before hitting the sink, it is NOT vulnerable. Do NOT flag it as a vulnerability.\n"
+        "4. FRONTEND RULE: If this is a React/Browser environment, it cannot have SQL/Command Injection.\n"
+        "5. VULNERABILITY HIERARCHY: Injections (SQLi, Command, Path) always take precedence over IDOR. Look for Injections first.\n\n"
+        "SEVERITY GUIDELINES:\n"
+        "  HIGH   - Direct path from user input to sink, no sanitisation\n"
+        "  MEDIUM - Partial sanitisation or indirect taint path\n"
+        "  LOW    - Theoretical risk, unlikely to be exploitable as-is\n\n"
+        + sink_ctx
+        + "RESPOND WITH ONLY VALID JSON. No markdown, no text outside the JSON.\n"
+        "IMPORTANT: Do NOT include \"source_code\" in your output - I already have it.\n"
+        "IMPORTANT: example_exploit MUST be a concrete malicious payload example string, not placeholders like 'malicious_payload' or 'user_input'.\n"
+        "IMPORTANT: attack_explanation MUST be 1-2 short sentences explaining exactly how that payload reaches and abuses the sink.\n"
+        "Keep output compact so the full JSON fits within token limits.\n\n"
         "Use this EXACT structure:\n\n"
         "{\n"
         '  "language": "<same as input>",\n'
@@ -170,7 +191,9 @@ def build_function_chunk_prompt(
         '          "severity": "HIGH",\n'
         '          "calls": ["sqlite3.execute"],\n'
         '          "modules_used": ["sqlite3"],\n'
-        '          "reason": "User input concatenated directly into SQL query"\n'
+        '          "reason": "User input concatenated directly into SQL query.",\n'
+        '          "example_exploit": "bulk_insert(\"users; DROP TABLE users; --\", data)",\n'
+        '          "attack_explanation": "The payload closes the intended SQL value and injects a destructive second statement that the sink executes."\n'
         '        }\n'
         '      ]\n'
         '    }\n'
@@ -179,7 +202,7 @@ def build_function_chunk_prompt(
         "}\n\n"
         f"If NO vulnerabilities are found return:\n"
         f'{{"language":"<lang>","results":{{"{lang_key}":{{"wrapper_functions":[]}}}},"analysis_summary":"No vulnerable wrappers found."}}\n\n'
-        f"=== WRAPPER FUNCTIONS ({len(wrappers)}) ===\n\n"
+        f"=== {lang_label} WRAPPER FUNCTIONS ({len(wrappers)}) ===\n\n"
         + "".join(func_parts)
     )
 
@@ -286,6 +309,29 @@ PROMPT_OVERHEAD_TOKENS = 600
 # chunking behavior.
 FUNCTION_BUDGET_PER_CHUNK = EFFECTIVE_TPM - PROMPT_OVERHEAD_TOKENS
 
+# Hard upper bound for repository size at analysis stage.
+# If wrapper extraction would generate too many chunks, fail fast so scans
+# terminate cleanly instead of running for a very long time.
+MAX_PHASE2_CHUNKS = int(os.getenv("GROQ_MAX_PHASE2_CHUNKS", "120"))
+
+_TOKEN_ENCODER = None
+if tiktoken is not None:
+    try:
+        _TOKEN_ENCODER = tiktoken.get_encoding("cl100k_base")
+    except Exception:
+        _TOKEN_ENCODER = None
+
+
+def _estimate_text_tokens(text: str) -> int:
+    """Estimate token count using cl100k_base when available."""
+    if _TOKEN_ENCODER is not None:
+        try:
+            return len(_TOKEN_ENCODER.encode(text or ""))
+        except Exception:
+            pass
+    # Fallback heuristic if tokenizer unavailable at runtime.
+    return max(1, len(text or "") // 4)
+
 
 def _estimate_function_tokens(func: dict) -> int:
     """
@@ -293,8 +339,7 @@ def _estimate_function_tokens(func: dict) -> int:
     prompt.  Uses the same truncation cap (SOURCE_CODE_CHAR_LIMIT) so the
     estimate reflects what will actually be sent.
 
-    Adds a +30 token overhead per function for template formatting (brackets,
-    labels, whitespace).
+    Uses real tokenization via cl100k_base when available.
     """
     src = (func.get("source_code") or "")[:SOURCE_CODE_CHAR_LIMIT]
     calls = [str(c) for c in (func.get("calls") or []) if c is not None]
@@ -308,7 +353,7 @@ def _estimate_function_tokens(func: dict) -> int:
         ", ".join(mods),
         src,
     ])
-    return max(1, len(text) // 4) + 30  # +30 for per-function prompt formatting
+    return _estimate_text_tokens(text)
 
 
 def _build_dynamic_chunks(all_wrappers: list) -> list:
@@ -455,6 +500,13 @@ async def analyze_wrappers_with_llm(
     # Total calls = 1 Phase 1 per language-with-wrappers + all Phase 2 chunks
     langs_with_wrappers = list(chunks_by_lang.keys())
     total_calls = len(langs_with_wrappers) + total_phase2_chunks
+
+    if total_phase2_chunks > MAX_PHASE2_CHUNKS:
+        raise ValueError(
+            "Repository too large to scan: "
+            f"estimated {total_phase2_chunks} analysis chunks exceeds limit "
+            f"({MAX_PHASE2_CHUNKS})."
+        )
 
     if total_phase2_chunks == 0:
         final_merged_result["analysis_summary"] = "No wrapper functions to analyse."
@@ -778,7 +830,7 @@ async def _call_groq_module_phase(
     # Module-only prompts are very small — rough estimate
     estimated_tokens = max(
         200,
-        len(prompt) // 4 + 100,
+        _estimate_text_tokens(prompt),
     )
     context_payload = {"language": lang_key, "results": {lang_key: {"modules": modules}}}
 
@@ -1136,6 +1188,8 @@ def _repair_truncated_json(text: str) -> Optional[Dict]:
         result = json.loads(t)
         if isinstance(result, dict):
             logger.warning(f"Repaired truncated JSON (closed {len(opens)} bracket(s))")
+            result["_truncated"] = True
+            result["_repair_warning"] = "JSON was truncated and repaired - analysis may be incomplete"
             return result
     except json.JSONDecodeError:
         pass
