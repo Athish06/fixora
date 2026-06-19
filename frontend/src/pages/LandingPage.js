@@ -15,12 +15,12 @@ const LandingPage = () => {
     {
       icon: Shield,
       title: 'Smart Classification',
-      description: 'Eliminate 85% false positives with embedding-based vulnerability analysis'
+      description: 'LLM-powered pattern classification reduces false positives with project-aware context'
     },
     {
       icon: GitBranch,
-      title: 'Auto-Fix PRs',
-      description: 'Generate secure code fixes and create pull requests automatically'
+      title: 'Smart Remediation',
+      description: 'Get actionable fix guidance and remediation steps for every vulnerability'
     },
     {
       icon: Zap,
@@ -54,7 +54,7 @@ const LandingPage = () => {
             </h1>
             <p className="text-xl md:text-2xl text-muted-foreground mb-12 max-w-3xl mx-auto leading-relaxed">
               Stop chasing false positives. Let AI discover your custom patterns,
-              classify real threats, and auto-fix vulnerabilities.
+              classify real threats, and provide actionable remediation guidance.
             </p>
             <div className="flex flex-col sm:flex-row gap-4 justify-center">
               <Link to="/register">
@@ -128,7 +128,7 @@ const LandingPage = () => {
         <div className="max-w-7xl mx-auto">
           <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
             {[
-              { value: '85%', label: 'False Positives Eliminated' },
+              { value: '4-Phase', label: 'AI Analysis Pipeline' },
               { value: '10x', label: 'Faster Vulnerability Detection' },
               { value: '500k+', label: 'Lines of Code Analyzed' }
             ].map((stat, index) => (

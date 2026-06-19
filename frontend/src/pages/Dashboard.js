@@ -5,7 +5,6 @@ import {
   AlertTriangle,
   TrendingUp,
   Shield,
-  GitPullRequest,
   Activity,
   ArrowRight
 } from 'lucide-react';
@@ -148,7 +147,9 @@ const Dashboard = () => {
               <CardContent>
                 <div className="flex items-center text-sm text-muted-foreground">
                   <TrendingUp className="w-4 h-4 mr-2" />
-                  85% accuracy rate
+                  {stats?.total_vulnerabilities > 0
+                    ? `${Math.round((stats?.ai_false_positives_prevented / stats?.total_vulnerabilities) * 100) || 0}% AI-verified`
+                    : 'No data yet'}
                 </div>
               </CardContent>
             </AnimatedCard>
@@ -159,17 +160,17 @@ const Dashboard = () => {
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.5, delay: 0.3 }}
           >
-            <AnimatedCard hover={true} data-testid="pending-prs-card">
+            <AnimatedCard hover={true} data-testid="scans-week-card">
               <CardHeader className="pb-3">
-                <CardDescription>Pending Pull Requests</CardDescription>
+                <CardDescription>Scans This Week</CardDescription>
                 <CardTitle className="text-5xl font-bold">
-                  <NumberTicker value={stats?.pending_prs || 0} />
+                  <NumberTicker value={stats?.scans_this_week || 0} />
                 </CardTitle>
               </CardHeader>
               <CardContent>
                 <div className="flex items-center text-sm text-muted-foreground">
-                  <GitPullRequest className="w-4 h-4 mr-2" />
-                  Waiting for merge
+                  <Activity className="w-4 h-4 mr-2" />
+                  Automated scans
                 </div>
               </CardContent>
             </AnimatedCard>
