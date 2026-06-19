@@ -82,3 +82,5 @@ android-sdk/
 backend/.env
 frontend/.env
 IP/.env
+*.png
+generate.py

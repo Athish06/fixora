@@ -26,12 +26,20 @@ ALLOWED_VULNERABILITY_TYPES = {
     "Hardcoded Secret",
     "Business Logic Flaw",
     "Security Misconfiguration",
+    "Plaintext Password",
+    "Broken Authentication",
+    "Missing Authentication",
+    "Mass Assignment",
+    "Input Validation Failure",
+    "Debug Mode Enabled",
 }
 
 FRONTEND_IMPOSSIBLE_TYPES = {
     "SQL Injection",
     "Command Injection",
     "Path Traversal",
+    "Missing Authentication",
+    "Mass Assignment",
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -163,18 +171,30 @@ def build_function_chunk_prompt(
         f"=== TASK ===\n"
         f"Analyse the {lang_display} wrapper functions below.  "
         "For each function, determine:\n"
-        "  - Does it pass user-controlled data to a dangerous sink WITHOUT sanitisation?\n"
+        "  - Does it pass user-controlled data (or likely user-controlled function parameters) to a dangerous sink WITHOUT sanitisation?\n"
         "  - If YES -> include it in the output with vulnerability_type, severity, reason, vulnerable_parameter, malicious_payload, exploit_explanation, and impact_summary.\n"
         "  - If NO  -> skip it entirely.\n\n"
         "=== STRICT TAXONOMY & EXCLUSION RULES ===\n"
-        "1. ALLOWED CATEGORIES: You MUST classify vulnerabilities into exactly one of these types: ['SQL Injection', 'Command Injection', 'Path Traversal', 'XSS', 'SSRF', 'Insecure Deserialization', 'IDOR / Broken Access Control', 'Cryptographic Failure', 'Hardcoded Secret', 'Security Misconfiguration', 'Business Logic Flaw'].\n"
+        "1. ALLOWED CATEGORIES: You MUST classify vulnerabilities into exactly one of these types: ['SQL Injection', 'Command Injection', 'Path Traversal', 'XSS', 'SSRF', 'Insecure Deserialization', 'IDOR / Broken Access Control', 'Cryptographic Failure', 'Hardcoded Secret', 'Security Misconfiguration', 'Business Logic Flaw', 'Plaintext Password', 'Broken Authentication', 'Missing Authentication', 'Mass Assignment', 'Input Validation Failure', 'Debug Mode Enabled'].\n"
         "2. BUSINESS LOGIC FLAWS: Only use this category for logic/workflow bypasses (e.g., skipping a payment step). Do NOT use this for injections.\n"
         "3. SANITISATION RECOGNITION (CRITICAL): If the code uses strict Regex (e.g., `re.match`), explicit allowlists (e.g., `in ['jpg', 'png']`), or strict type casting (e.g., `int(user_id)`) before hitting the sink, it is NOT vulnerable. Do NOT flag it as a vulnerability.\n"
-        "4. FRONTEND RULE: If this is a React/Browser environment, it cannot have SQL/Command Injection.\n"
+        "4. FRONTEND RULE: If this is a React/Browser environment, it cannot have SQL Injection, Command Injection, Path Traversal, Missing Authentication, or Mass Assignment.\n"
         "5. VULNERABILITY HIERARCHY: Injections (SQLi, Command, Path) always take precedence over IDOR. Look for Injections first.\n\n"
+        "6. PLAINTEXT PASSWORD: If a function compares passwords with == instead of using a hashing library (bcrypt, hashlib with salt, etc.), classify as 'Plaintext Password'. This is HIGH severity.\n"
+        "7. MISSING AUTHENTICATION: If a function is a route handler (Flask route, FastAPI endpoint, Express route) with no auth check/decorator AND accesses user data, credentials, or admin info, classify as 'Missing Authentication'. HIGH severity.\n"
+        "8. MASS ASSIGNMENT: If a function accepts arbitrary request body fields and passes them directly to a model/ORM constructor or update() without field allowlisting, classify as 'Mass Assignment'.\n"
+        "9. INPUT VALIDATION FAILURE: If a function uses a complex regex with potential for catastrophic backtracking (ReDoS), or fails to validate/sanitize types properly, classify as 'Input Validation Failure'.\n\n"
+        "=== TAINT INFERENCE RULES (IMPORTANT) ===\n"
+        "A. These functions are pre-filtered wrappers that already call dangerous sinks; assume they are reachable unless code clearly proves internal-only constant input.\n"
+        "B. For backend code, treat function parameters as potentially user-controlled by default unless strict sanitisation/allowlisting is present.\n"
+        "C. You do NOT need full caller-graph proof. If unsanitized parameters are concatenated/interpolated/formatted into SQL/command/path/URL sinks, mark vulnerable.\n"
+        "D. If taint source is probable but not explicit in the snippet, still report with severity MEDIUM and explain the assumption clearly.\n"
+        "E. ANTI-PATTERN DETECTION: Some wrappers are marked with anti_pattern field. If anti_pattern == 'plaintext_password_comparison', classify as 'Plaintext Password' with HIGH severity. If anti_pattern == 'missing_authentication', classify as 'Missing Authentication' with HIGH severity without further analysis needed.\n"
+        "F. MASS ASSIGNMENT DETECTION: If a function accepts **kwargs, request.json, request.form, or a dict of user-provided fields and passes it to Model(...) / .update(**data) / .create(**data) without explicit field filtering, classify as 'Mass Assignment'.\n"
+        "G. CONFIGURATION DETECTION: If a function runs the app/server in debug mode (for example app.run(debug=True), app.run(host='0.0.0.0', debug=True), or equivalent JS dev debug exposure in production), classify as 'Debug Mode Enabled'.\n\n"
         "SEVERITY GUIDELINES:\n"
         "  HIGH   - Direct path from user input to sink, no sanitisation\n"
-        "  MEDIUM - Partial sanitisation or indirect taint path\n"
+        "  MEDIUM - Partial sanitisation, indirect taint path, or probable taint from unsanitized function parameters\n"
         "  LOW    - Theoretical risk, unlikely to be exploitable as-is\n\n"
         + sink_ctx
         + "RESPOND WITH ONLY VALID JSON. No markdown, no text outside the JSON.\n"
@@ -223,22 +243,50 @@ def _normalize_vulnerability_type(value: Any) -> Optional[str]:
     aliases = {
         "sqli": "SQL Injection",
         "sql injection": "SQL Injection",
+        "nosql injection": "SQL Injection",
+        "ldap injection": "SQL Injection",
+        "xpath injection": "SQL Injection",
         "command injection": "Command Injection",
+        "os command injection": "Command Injection",
+        "rce": "Command Injection",
+        "remote code execution": "Command Injection",
         "path traversal": "Path Traversal",
+        "directory traversal": "Path Traversal",
+        "lfi": "Path Traversal",
+        "local file inclusion": "Path Traversal",
         "xss": "XSS",
         "cross site scripting": "XSS",
         "cross-site scripting": "XSS",
         "ssrf": "SSRF",
         "insecure deserialization": "Insecure Deserialization",
+        "xxe": "Insecure Deserialization",
         "idor": "IDOR / Broken Access Control",
         "bola": "IDOR / Broken Access Control",
+        "broken object level authorization": "IDOR / Broken Access Control",
         "idor / broken access control": "IDOR / Broken Access Control",
         "broken access control": "IDOR / Broken Access Control",
         "cryptographic failure": "Cryptographic Failure",
         "hardcoded secret": "Hardcoded Secret",
         "hardcoded secrets": "Hardcoded Secret",
+        "hardcoded credential": "Hardcoded Secret",
+        "hardcoded credentials": "Hardcoded Secret",
         "business logic flaw": "Business Logic Flaw",
+        "business logic flaws": "Business Logic Flaw",
         "security misconfiguration": "Security Misconfiguration",
+        "plaintext password": "Plaintext Password",
+        "plaintext credential": "Plaintext Password",
+        "insecure password storage": "Plaintext Password",
+        "password in plain text": "Plaintext Password",
+        "broken authentication": "Broken Authentication",
+        "missing authentication": "Missing Authentication",
+        "no authentication": "Missing Authentication",
+        "unauthenticated endpoint": "Missing Authentication",
+        "mass assignment": "Mass Assignment",
+        "parameter pollution": "Mass Assignment",
+        "input validation failure": "Input Validation Failure",
+        "redos": "Input Validation Failure",
+        "regex dos": "Input Validation Failure",
+        "debug mode enabled": "Debug Mode Enabled",
     }
 
     key = raw.lower()
@@ -247,7 +295,134 @@ def _normalize_vulnerability_type(value: Any) -> Optional[str]:
         return normalized
     if raw in ALLOWED_VULNERABILITY_TYPES:
         return raw
+
+    fuzzy = key.replace("_", " ").replace("-", " ")
+    if any(tok in fuzzy for tok in ["sql", "nosql", "ldap", "xpath"]):
+        return "SQL Injection"
+    if any(tok in fuzzy for tok in ["command", "rce", "exec", "shell"]):
+        return "Command Injection"
+    if any(tok in fuzzy for tok in ["path travers", "directory travers", "lfi", "file inclusion"]):
+        return "Path Traversal"
+    if any(tok in fuzzy for tok in ["xss", "cross site scripting", "cross-site scripting"]):
+        return "XSS"
+    if "ssrf" in fuzzy:
+        return "SSRF"
+    if any(tok in fuzzy for tok in ["deserial", "xxe"]):
+        return "Insecure Deserialization"
+    if any(tok in fuzzy for tok in ["idor", "bola", "access control", "authorization"]):
+        return "IDOR / Broken Access Control"
+    if any(tok in fuzzy for tok in ["plaintext", "plain text", "password storage", "insecure password"]):
+        return "Plaintext Password"
+    if any(tok in fuzzy for tok in ["mass assign", "parameter pollution", "bulk assign"]):
+        return "Mass Assignment"
+    if any(tok in fuzzy for tok in ["missing auth", "no auth", "unauthenticated", "anonymous access"]):
+        return "Missing Authentication"
+    if any(tok in fuzzy for tok in ["redos", "regex dos", "catastrophic backtrack", "input validation"]):
+        return "Input Validation Failure"
+    if "debug mode" in fuzzy or "debug enabled" in fuzzy:
+        return "Debug Mode Enabled"
+    if any(tok in fuzzy for tok in ["crypto", "cryptographic", "hash", "cipher"]):
+        return "Cryptographic Failure"
+    if any(tok in fuzzy for tok in ["hardcoded", "secret", "credential", "token", "password"]):
+        return "Hardcoded Secret"
+    if any(tok in fuzzy for tok in ["business logic", "workflow bypass", "logic flaw"]):
+        return "Business Logic Flaw"
+    if any(tok in fuzzy for tok in ["misconfig", "misconfiguration", "cors", "headers"]):
+        return "Security Misconfiguration"
+
     return None
+
+
+def _coalesce_wrapper_fields(row: Dict[str, Any]) -> Dict[str, Any]:
+    """Accept compatibility key variants while preserving canonical output keys."""
+    item = dict(row)
+
+    if item.get("malicious_payload") is None and item.get("proof_of_concept_payload") is not None:
+        item["malicious_payload"] = item.get("proof_of_concept_payload")
+
+    if not item.get("exploit_explanation") and item.get("vulnerability_mechanism"):
+        item["exploit_explanation"] = item.get("vulnerability_mechanism")
+
+    return item
+
+
+def _infer_vulnerability_type_from_context(row: Dict[str, Any], ctx: Dict[str, Any]) -> str:
+    """Infer a stable allowed vulnerability type when model labels are missing or variant."""
+    explicit = _normalize_vulnerability_type(row.get("vulnerability_type"))
+    if explicit:
+        return explicit
+
+    row_calls = row.get("calls") if isinstance(row.get("calls"), list) else []
+    row_modules = row.get("modules_used") if isinstance(row.get("modules_used"), list) else []
+    ctx_calls = ctx.get("calls") if isinstance(ctx.get("calls"), list) else []
+    ctx_modules = ctx.get("modules_used") if isinstance(ctx.get("modules_used"), list) else []
+
+    haystack = " ".join([
+        str(row.get("reason") or ""),
+        str(row.get("title") or ""),
+        str(row.get("description") or ""),
+        " ".join(str(x) for x in row_calls),
+        " ".join(str(x) for x in row_modules),
+        " ".join(str(x) for x in ctx_calls),
+        " ".join(str(x) for x in ctx_modules),
+    ]).lower()
+
+    if any(tok in haystack for tok in ["sql", "nosql", "sqlite", "query", "where "]):
+        return "SQL Injection"
+    if any(tok in haystack for tok in ["subprocess", "os.system", "popen", "exec", "shell="]):
+        return "Command Injection"
+    if any(tok in haystack for tok in ["path", "traversal", "../", "dirname", "open("]):
+        return "Path Traversal"
+    if any(tok in haystack for tok in ["xss", "innerhtml", "dangerouslysetinnerhtml", "onerror="]):
+        return "XSS"
+    if any(tok in haystack for tok in ["ssrf", "169.254.169.254", "requests.get", "urlopen("]):
+        return "SSRF"
+    if any(tok in haystack for tok in ["deserialize", "pickle", "yaml.load", "xxe"]):
+        return "Insecure Deserialization"
+    if any(tok in haystack for tok in ["missing authentication", "missing auth", "no authentication", "no auth", "unauthenticated", "anonymous access"]):
+        return "Missing Authentication"
+    if any(tok in haystack for tok in ["broken authentication", "auth bypass", "authentication bypass"]):
+        return "Broken Authentication"
+    if any(tok in haystack for tok in ["idor", "bola", "access control", "unauthorized", "authorization"]):
+        return "IDOR / Broken Access Control"
+    if any(tok in haystack for tok in ["plaintext password", "plain text password", "password in plain text", "insecure password storage", "password comparison"]):
+        return "Plaintext Password"
+    if any(tok in haystack for tok in ["mass assignment", "parameter pollution", "bulk assign", "unrestricted field"]):
+        return "Mass Assignment"
+    if any(tok in haystack for tok in ["input validation failure", "redos", "regex dos", "catastrophic backtrack", "catastrophic backtracking"]):
+        return "Input Validation Failure"
+    if any(tok in haystack for tok in ["debug mode", "debug enabled", "debug=true", "app.debug"]):
+        return "Debug Mode Enabled"
+    if any(tok in haystack for tok in ["md5", "sha1", "weak crypto", "weak hash", "cipher"]):
+        return "Cryptographic Failure"
+    if any(tok in haystack for tok in ["secret", "token", "password", "api key", "hardcoded"]):
+        return "Hardcoded Secret"
+    if any(tok in haystack for tok in ["business logic", "workflow bypass", "logic flaw"]):
+        return "Business Logic Flaw"
+
+    # Last-resort canonical fallback to avoid silently dropping model findings.
+    return "Security Misconfiguration"
+
+
+def _extract_wrapper_rows(ai_output: Any) -> list:
+    """Extract wrapper rows from common model output variants without changing canonical schema."""
+    if not isinstance(ai_output, dict):
+        return []
+
+    for key in ("wrapper_functions", "vulnerabilities", "findings", "wrappers"):
+        rows = ai_output.get(key)
+        if isinstance(rows, list):
+            return rows
+
+    nested_results = ai_output.get("results")
+    if isinstance(nested_results, dict):
+        for section in nested_results.values():
+            if isinstance(section, dict):
+                rows = section.get("wrapper_functions")
+                if isinstance(rows, list):
+                    return rows
+
+    return []
 
 
 def _sanitize_llm_wrappers(chunk_wrappers: list, ai_wrappers: list) -> list:
@@ -256,31 +431,74 @@ def _sanitize_llm_wrappers(chunk_wrappers: list, ai_wrappers: list) -> list:
         return []
 
     context_by_key = {}
+    context_by_name = {}
     for w in chunk_wrappers:
         fn = str(w.get("function_name") or "").strip()
         fp = str(w.get("file") or "").strip()
         context_by_key[(fn, fp)] = w
+        if fn:
+            context_by_name.setdefault(fn, []).append(w)
 
     cleaned = []
+    drop_stats = {
+        "non_dict": 0,
+        "frontend_filtered": 0,
+        "coerced_type": 0,
+    }
+
     for row in ai_wrappers:
         if not isinstance(row, dict):
+            drop_stats["non_dict"] += 1
             continue
 
-        vuln_type = _normalize_vulnerability_type(row.get("vulnerability_type"))
-        if not vuln_type:
-            continue
+        item = _coalesce_wrapper_fields(row)
 
-        fn = str(row.get("function_name") or "").strip()
-        fp = str(row.get("file") or "").strip()
-        ctx = context_by_key.get((fn, fp), {})
+        fn = str(item.get("function_name") or "").strip()
+        fp = str(item.get("file") or "").strip()
+        ctx = context_by_key.get((fn, fp))
+
+        if not ctx and fn and fn in context_by_name:
+            candidates = context_by_name[fn]
+            if len(candidates) == 1:
+                ctx = candidates[0]
+            elif fp:
+                file_base = fp.replace("\\", "/").split("/")[-1].lower()
+                matched = [
+                    c for c in candidates
+                    if str(c.get("file") or "").replace("\\", "/").split("/")[-1].lower() == file_base
+                ]
+                if len(matched) == 1:
+                    ctx = matched[0]
+
+        ctx = ctx or {}
+        vuln_type = _infer_vulnerability_type_from_context(item, ctx)
+        if _normalize_vulnerability_type(item.get("vulnerability_type")) is None:
+            drop_stats["coerced_type"] += 1
+
         env = str(ctx.get("environment") or "BACKEND")
 
         if env == "BROWSER (Frontend)" and vuln_type in FRONTEND_IMPOSSIBLE_TYPES:
+            drop_stats["frontend_filtered"] += 1
             continue
 
-        item = dict(row)
         item["vulnerability_type"] = vuln_type
+
+        if not item.get("function_name") and ctx.get("function_name"):
+            item["function_name"] = ctx.get("function_name")
+        if not item.get("file") and ctx.get("file"):
+            item["file"] = ctx.get("file")
+
         cleaned.append(item)
+
+    if any(drop_stats.values()):
+        logger.info(
+            "LLM sanitize stats: total=%s kept=%s non_dict=%s frontend_filtered=%s coerced_type=%s",
+            len(ai_wrappers),
+            len(cleaned),
+            drop_stats["non_dict"],
+            drop_stats["frontend_filtered"],
+            drop_stats["coerced_type"],
+        )
 
     return cleaned
 
@@ -291,6 +509,11 @@ def _sanitize_llm_wrappers(chunk_wrappers: list, ai_wrappers: list) -> list:
 
 MAX_RETRIES = 3                  # Retry attempts per chunk (helps transient 429s)
 SOURCE_CODE_CHAR_LIMIT = 1500   # Max chars of source_code sent per function (~375 tokens)
+
+# If a chunk is too large (HTTP 413), retry with progressively smaller source
+# slices before escalating to manual review.
+MANUAL_REVIEW_RECOVERY_LIMITS = [900, 600, 350]
+MANUAL_REVIEW_MICRO_LIMIT = 220
 
 # ── Rate limiting (Groq) ─────────────────────────────────────────────────────
 # These defaults match the dashboard limits shown in your screenshots:
@@ -312,10 +535,39 @@ RATE_LIMIT_JITTER_MAX = int(os.getenv("GROQ_RATE_LIMIT_JITTER_MAX", "10"))
 # Estimated token cost of prompt overhead per chunk:
 # system message + module list headers + formatting (~600 tokens)
 PROMPT_OVERHEAD_TOKENS = 600
-# Token budget available for function content inside a single Groq request.
-# Keep this tied directly to effective TPM to preserve the original greedy
-# chunking behavior.
-FUNCTION_BUDGET_PER_CHUNK = EFFECTIVE_TPM - PROMPT_OVERHEAD_TOKENS
+
+# Completion and request sizing knobs.
+MAX_COMPLETION_TOKENS = int(os.getenv("GROQ_MAX_COMPLETION_TOKENS", "8192"))
+MIN_COMPLETION_TOKENS = int(os.getenv("GROQ_MIN_COMPLETION_TOKENS", "512"))
+
+# Headroom below the provider hard TPM to absorb chat/protocol token overhead.
+REQUEST_TOKEN_SAFETY_MARGIN_TOKENS = int(
+    os.getenv("GROQ_REQUEST_TOKEN_SAFETY_MARGIN_TOKENS", "900")
+)
+
+# Estimated system/chat scaffolding tokens outside the user prompt body.
+SYSTEM_PROMPT_OVERHEAD_TOKENS = int(
+    os.getenv("GROQ_SYSTEM_PROMPT_OVERHEAD_TOKENS", "120")
+)
+
+_DEFAULT_SINGLE_REQUEST_BUDGET = max(
+    1024,
+    GROQ_TPM_LIMIT - REQUEST_TOKEN_SAFETY_MARGIN_TOKENS,
+)
+SINGLE_REQUEST_TOKEN_BUDGET = min(
+    GROQ_TPM_LIMIT,
+    int(os.getenv("GROQ_SINGLE_REQUEST_TOKEN_BUDGET", str(_DEFAULT_SINGLE_REQUEST_BUDGET))),
+)
+
+# Token budget available for function content inside a single request,
+# after reserving room for prompt scaffolding and minimum completion tokens.
+FUNCTION_BUDGET_PER_CHUNK = max(
+    256,
+    SINGLE_REQUEST_TOKEN_BUDGET
+    - PROMPT_OVERHEAD_TOKENS
+    - SYSTEM_PROMPT_OVERHEAD_TOKENS
+    - MIN_COMPLETION_TOKENS,
+)
 
 # Hard upper bound for repository size at analysis stage.
 # If wrapper extraction would generate too many chunks, fail fast so scans
@@ -330,6 +582,14 @@ if tiktoken is not None:
         _TOKEN_ENCODER = None
 
 
+SYSTEM_PROMPT_CONTENT = (
+    "You are an expert application-security engineer. "
+    "You analyze code for vulnerabilities and respond ONLY with valid JSON. "
+    "Never include markdown code fences or any text outside the JSON object. "
+    "Do NOT include a \"source_code\" field in your output."
+)
+
+
 def _estimate_text_tokens(text: str) -> int:
     """Estimate token count using cl100k_base when available."""
     if _TOKEN_ENCODER is not None:
@@ -339,6 +599,26 @@ def _estimate_text_tokens(text: str) -> int:
             pass
     # Fallback heuristic if tokenizer unavailable at runtime.
     return max(1, len(text or "") // 4)
+
+
+def _estimate_prompt_tokens(prompt: str) -> int:
+    """Estimate full input tokens (user prompt + system/chat scaffolding)."""
+    return _estimate_text_tokens(prompt) + SYSTEM_PROMPT_OVERHEAD_TOKENS
+
+
+def _pick_completion_tokens(prompt_tokens: int) -> int:
+    """Pick the largest safe completion size for this prompt within request budget."""
+    remaining = SINGLE_REQUEST_TOKEN_BUDGET - int(prompt_tokens)
+    if remaining <= 0:
+        return 64
+    if remaining >= MIN_COMPLETION_TOKENS:
+        return min(MAX_COMPLETION_TOKENS, remaining)
+    return max(64, min(MAX_COMPLETION_TOKENS, remaining))
+
+
+def _estimate_request_tokens(prompt: str, max_completion_tokens: int) -> int:
+    """Estimate total request tokens = prompt input + requested completion."""
+    return _estimate_prompt_tokens(prompt) + int(max_completion_tokens)
 
 
 def _estimate_function_tokens(func: dict) -> int:
@@ -582,8 +862,6 @@ async def analyze_wrappers_with_llm(
         for chunk_idx, chunk_info in enumerate(chunks):
             chunk     = chunk_info["funcs"]
             oversized = chunk_info["oversized"]
-            # Total estimated tokens = function content + prompt overhead
-            estimated_tokens = chunk_info["func_tokens"] + PROMPT_OVERHEAD_TOKENS
 
             # Build phase-2 prompt with truncated source_code
             truncated_chunk = [
@@ -593,6 +871,9 @@ async def analyze_wrappers_with_llm(
             prompt = build_function_chunk_prompt(
                 lang_key, modules, sink_modules, sink_reason, truncated_chunk
             )
+            prompt_tokens = _estimate_prompt_tokens(prompt)
+            max_completion_tokens = _pick_completion_tokens(prompt_tokens)
+            estimated_tokens = _estimate_request_tokens(prompt, max_completion_tokens)
 
             chunk_payload = {
                 "language": language,
@@ -604,44 +885,94 @@ async def analyze_wrappers_with_llm(
                 },
             }
 
-            # ── Rate-limit gate ───────────────────────────────────────────
-            await _rate_limit_wait(rate_state, estimated_tokens)
+            chunk_result = None
+            if estimated_tokens > SINGLE_REQUEST_TOKEN_BUDGET and max_completion_tokens <= 64:
+                logger.warning(
+                    "  Phase 2 chunk %s/%s [%s] preflight too large "
+                    "(est=%s, budget=%s, input~%s). "
+                    "Skipping direct call and entering reduced-size recovery.",
+                    chunk_idx + 1,
+                    len(chunks),
+                    lang_key,
+                    estimated_tokens,
+                    SINGLE_REQUEST_TOKEN_BUDGET,
+                    prompt_tokens,
+                )
+                meta = {
+                    "chunk_index": chunk_idx,
+                    "lang": lang_key,
+                    "function_names": [w.get("function_name", "?") for w in chunk],
+                    "status": "manual_review",
+                    "attempts": 0,
+                    "error": "Preflight oversized request estimate exceeded per-request budget",
+                }
+            else:
+                # ── Rate-limit gate ───────────────────────────────────────────
+                await _rate_limit_wait(rate_state, estimated_tokens)
 
-            logger.info(
-                f"  Phase 2 chunk {chunk_idx+1}/{len(chunks)} [{lang_key}] "
-                f"({len(chunk)} fn(s), ~{estimated_tokens} est. tokens)"
-                + (" [OVERSIZED — single fn exceeds budget, may 413]" if oversized else "")
-            )
+                logger.info(
+                    f"  Phase 2 chunk {chunk_idx+1}/{len(chunks)} [{lang_key}] "
+                    f"({len(chunk)} fn(s), ~{estimated_tokens} est. req tokens, "
+                    f"input~{prompt_tokens}, max_tokens={max_completion_tokens})"
+                    + (" [OVERSIZED — single fn exceeds budget, may 413]" if oversized else "")
+                )
 
-            # ── Call Groq with retry / error handling ─────────────────────
-            chunk_result, meta = await _call_groq_with_retry(
-                chunk_payload, prompt, chunk_idx, len(chunks), lang_key,
-                estimated_tokens, rate_state,
-            )
+                # ── Call Groq with retry / error handling ─────────────────────
+                chunk_result, meta = await _call_groq_with_retry(
+                    chunk_payload, prompt, chunk_idx, len(chunks), lang_key,
+                    estimated_tokens, max_completion_tokens, rate_state,
+                )
 
             # Annotate meta with chunk-level details before storing
             meta["oversized"]  = oversized
             meta["func_count"] = len(chunk)
 
             # Record this request against the rate window
-            _record_request(rate_state, estimated_tokens)
+            if meta.get("attempts", 0) > 0:
+                _record_request(rate_state, estimated_tokens)
 
             all_chunk_meta.append(meta)
             processed_total += 1
 
             # ── Handle 413 → manual review ────────────────────────────────
             if meta["status"] == "manual_review":
-                manual_review_required.append({
-                    "chunk_index":    meta["chunk_index"],
-                    "lang":           meta["lang"],
-                    "function_names": meta["function_names"],
-                    "reason": (
-                        "Request too large for AI analysis (HTTP 413). "
-                        "Review these functions manually."
-                    ),
-                    "wrapper_count": len(meta["function_names"]),
-                    "was_oversized_estimate": oversized,
-                })
+                recovered_wrappers, unresolved_names = await _recover_too_large_chunk(
+                    language=language,
+                    lang_key=lang_key,
+                    modules=modules,
+                    sink_modules=sink_modules,
+                    sink_reason=sink_reason,
+                    chunk=chunk,
+                    chunk_idx=chunk_idx,
+                    total_chunks=len(chunks),
+                    rate_state=rate_state,
+                )
+
+                if recovered_wrappers:
+                    final_merged_result["results"][lang_key]["wrapper_functions"].extend(
+                        recovered_wrappers
+                    )
+                    total_vuln_wrappers += len(recovered_wrappers)
+
+                if unresolved_names:
+                    manual_review_required.append({
+                        "chunk_index": meta["chunk_index"],
+                        "lang": meta["lang"],
+                        "function_names": unresolved_names,
+                        "reason": (
+                            "Request too large for AI analysis after reduced-size retries (HTTP 413). "
+                            "Review these functions manually."
+                        ),
+                        "wrapper_count": len(unresolved_names),
+                        "was_oversized_estimate": oversized,
+                    })
+                else:
+                    logger.info(
+                        "Recovered previously too-large chunk %s/%s [%s] via reduced-size fallback.",
+                        chunk_idx + 1,
+                        len(chunks),
+                        lang_key,
+                    )
 
             elif meta["status"] == "success" and chunk_result:
                 # ── Merge successful results ──────────────────────────────
@@ -659,13 +990,28 @@ async def analyze_wrappers_with_llm(
                                 total_sinks.add(sink)
 
                     # Merge vulnerable wrapper functions
-                    new_wrappers = ai_output.get("wrapper_functions", [])
-                    if isinstance(new_wrappers, list):
-                        new_wrappers = _sanitize_llm_wrappers(chunk, new_wrappers)
+                    raw_wrappers = _extract_wrapper_rows(ai_output)
+                    if not raw_wrappers and isinstance(chunk_result, dict):
+                        raw_wrappers = _extract_wrapper_rows(chunk_result)
+
+                    if isinstance(raw_wrappers, list):
+                        kept_wrappers = _sanitize_llm_wrappers(chunk, raw_wrappers)
+                        dropped_count = len(raw_wrappers) - len(kept_wrappers)
+                        if dropped_count > 0:
+                            logger.info(
+                                "Chunk %s/%s [%s]: raw_wrapper_rows=%s kept=%s dropped=%s",
+                                chunk_idx + 1,
+                                len(chunks),
+                                lang_key,
+                                len(raw_wrappers),
+                                len(kept_wrappers),
+                                dropped_count,
+                            )
+
                         final_merged_result["results"][lang_key]["wrapper_functions"].extend(
-                            new_wrappers
+                            kept_wrappers
                         )
-                        total_vuln_wrappers += len(new_wrappers)
+                        total_vuln_wrappers += len(kept_wrappers)
 
             # ── Progress + ETA callback ───────────────────────────────────
             if progress_callback:
@@ -737,12 +1083,13 @@ async def _rate_limit_wait(state: dict, estimated_tokens: int):
     import time
     import asyncio
 
-    if estimated_tokens > EFFECTIVE_TPM:
-        # Oversized estimates can happen for huge single-function chunks.
-        # Let the call proceed and rely on HTTP 413 handling instead of deadlocking.
+    if estimated_tokens > SINGLE_REQUEST_TOKEN_BUDGET:
+        # This request likely exceeds provider hard limits even after budgeting.
+        # Let it proceed so existing 413/manual-review recovery path can run.
         logger.warning(
-            f"Estimated request ({estimated_tokens} tokens) exceeds effective TPM "
-            f"({EFFECTIVE_TPM}). Sending anyway and relying on 413/manual-review fallback."
+            f"Estimated request ({estimated_tokens} tokens) exceeds per-request budget "
+            f"({SINGLE_REQUEST_TOKEN_BUDGET}). Sending anyway and relying on "
+            "413/manual-review fallback."
         )
         return
 
@@ -767,9 +1114,13 @@ async def _rate_limit_wait(state: dict, estimated_tokens: int):
             state["tokens_this_minute"] = 0
             return
 
+        # Allow a single large request to use a fresh window even when it
+        # exceeds EFFECTIVE_TPM, while still preventing bursts.
+        window_token_limit = max(EFFECTIVE_TPM, estimated_tokens)
+
         needs_wait = (
             state["requests_this_minute"] >= MAX_RPM
-            or state["tokens_this_minute"] + estimated_tokens > EFFECTIVE_TPM
+            or state["tokens_this_minute"] + estimated_tokens > window_token_limit
         )
         if not needs_wait:
             return
@@ -835,11 +1186,9 @@ async def _call_groq_module_phase(
     import asyncio
 
     prompt = build_module_sink_prompt(lang_key, modules)
-    # Module-only prompts are very small — rough estimate
-    estimated_tokens = max(
-        200,
-        _estimate_text_tokens(prompt),
-    )
+    prompt_tokens = _estimate_prompt_tokens(prompt)
+    max_completion_tokens = _pick_completion_tokens(prompt_tokens)
+    estimated_tokens = _estimate_request_tokens(prompt, max_completion_tokens)
     context_payload = {"language": lang_key, "results": {lang_key: {"modules": modules}}}
 
     for attempt in range(1, MAX_RETRIES + 1):
@@ -847,7 +1196,11 @@ async def _call_groq_module_phase(
             f"  Phase 1 [{lang_key}] — module sink detection, attempt {attempt}/{MAX_RETRIES}"
         )
         await _rate_limit_wait(rate_state, estimated_tokens)
-        result = await _call_groq_api(prompt, context_payload)
+        result = await _call_groq_api(
+            prompt,
+            context_payload,
+            max_completion_tokens=max_completion_tokens,
+        )
         _record_request(rate_state, estimated_tokens)
 
         if not result or result.get("error"):
@@ -897,6 +1250,7 @@ async def _call_groq_with_retry(
     total_chunks: int,
     lang_key: str,
     estimated_tokens: int,
+    max_completion_tokens: int,
     rate_state: dict,
 ) -> tuple:
     """
@@ -929,7 +1283,11 @@ async def _call_groq_with_retry(
             f"  Chunk {chunk_index+1}/{total_chunks} [{lang_key}] — "
             f"attempt {attempt}/{MAX_RETRIES}"
         )
-        result = await _call_groq_api(prompt, chunk_payload)
+        result = await _call_groq_api(
+            prompt,
+            chunk_payload,
+            max_completion_tokens=max_completion_tokens,
+        )
 
         # ── Success ───────────────────────────────────────────────────────
         if result and not result.get("error"):
@@ -979,7 +1337,11 @@ async def _call_groq_with_retry(
     return None, meta
 
 
-async def _call_groq_api(prompt: str, context_payload: Dict[str, Any]) -> Dict[str, Any]:
+async def _call_groq_api(
+    prompt: str,
+    context_payload: Dict[str, Any],
+    max_completion_tokens: Optional[int] = None,
+) -> Dict[str, Any]:
     """Make a single Groq API call with the pre-built *prompt*.
 
     *context_payload* is only used for error fallback metadata (language key,
@@ -1005,24 +1367,27 @@ async def _call_groq_api(prompt: str, context_payload: Dict[str, Any]) -> Dict[s
             api_key=groq_token,
         )
 
+        if max_completion_tokens is None:
+            prompt_tokens = _estimate_prompt_tokens(prompt)
+            max_completion_tokens = _pick_completion_tokens(prompt_tokens)
+        else:
+            max_completion_tokens = int(max_completion_tokens)
+
+        max_completion_tokens = max(64, min(MAX_COMPLETION_TOKENS, max_completion_tokens))
+
         completion = await client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[
                 {
                     "role": "system",
-                    "content": (
-                        "You are an expert application-security engineer. "
-                        "You analyze code for vulnerabilities and respond ONLY with valid JSON. "
-                        "Never include markdown code fences or any text outside the JSON object. "
-                        "Do NOT include a \"source_code\" field in your output."
-                    ),
+                    "content": SYSTEM_PROMPT_CONTENT,
                 },
                 {
                     "role": "user",
                     "content": prompt,
                 },
             ],
-            max_tokens=8192,
+            max_tokens=max_completion_tokens,
             temperature=0.1,
             response_format={"type": "json_object"},
         )
@@ -1050,6 +1415,189 @@ async def _call_groq_api(prompt: str, context_payload: Dict[str, Any]) -> Dict[s
     except Exception as exc:
         logger.error(f"Error calling Groq LLM on chunk: {exc}")
         return _empty_result(context_payload, error=str(exc))
+
+
+def _truncate_wrappers_for_retry(wrappers: list, char_limit: int) -> list:
+    """Return a shallow-copied wrapper list with shorter source snippets."""
+    return [
+        {**w, "source_code": (w.get("source_code") or "")[:char_limit]}
+        for w in (wrappers or [])
+    ]
+
+
+def _extract_and_sanitize_wrappers(
+    chunk_context: list,
+    lang_key: str,
+    chunk_result: Dict[str, Any] | None,
+) -> list:
+    """Extract wrapper rows from model output variants and sanitize to canonical schema."""
+    if not isinstance(chunk_result, dict):
+        return []
+
+    chunk_results = chunk_result.get("results", {})
+    ai_output = chunk_results.get(lang_key) or next(iter(chunk_results.values()), None)
+
+    raw_rows = _extract_wrapper_rows(ai_output) if isinstance(ai_output, dict) else []
+    if not raw_rows:
+        raw_rows = _extract_wrapper_rows(chunk_result)
+
+    if not isinstance(raw_rows, list):
+        return []
+
+    return _sanitize_llm_wrappers(chunk_context, raw_rows)
+
+
+async def _recover_too_large_chunk(
+    language: str,
+    lang_key: str,
+    modules: Dict[str, Any],
+    sink_modules: list,
+    sink_reason: str,
+    chunk: list,
+    chunk_idx: int,
+    total_chunks: int,
+    rate_state: dict,
+) -> tuple[list, list]:
+    """
+    Try to recover a 413/manual-review chunk using tighter source truncation.
+
+    Returns:
+      (recovered_vulnerable_wrappers, unresolved_function_names)
+    """
+    recovered: list = []
+
+    # Pass 1: retry whole chunk with progressively smaller source slices.
+    for char_limit in MANUAL_REVIEW_RECOVERY_LIMITS:
+        retry_chunk = _truncate_wrappers_for_retry(chunk, char_limit)
+        retry_prompt = build_function_chunk_prompt(
+            lang_key=lang_key,
+            modules=modules,
+            sink_modules=sink_modules,
+            sink_reason=sink_reason,
+            wrappers=retry_chunk,
+        )
+        retry_payload = {
+            "language": language,
+            "results": {
+                lang_key: {
+                    "modules": modules,
+                    "wrapper_functions": retry_chunk,
+                }
+            },
+        }
+        retry_prompt_tokens = _estimate_prompt_tokens(retry_prompt)
+        retry_max_completion = _pick_completion_tokens(retry_prompt_tokens)
+        retry_tokens = _estimate_request_tokens(retry_prompt, retry_max_completion)
+
+        if retry_tokens > SINGLE_REQUEST_TOKEN_BUDGET and retry_max_completion <= 64:
+            logger.info(
+                "Skipping recovery attempt for chunk %s/%s [%s] at source_limit=%s: "
+                "still over request budget (est=%s, budget=%s).",
+                chunk_idx + 1,
+                total_chunks,
+                lang_key,
+                char_limit,
+                retry_tokens,
+                SINGLE_REQUEST_TOKEN_BUDGET,
+            )
+            continue
+
+        await _rate_limit_wait(rate_state, retry_tokens)
+        retry_result, retry_meta = await _call_groq_with_retry(
+            retry_payload,
+            retry_prompt,
+            chunk_idx,
+            total_chunks,
+            lang_key,
+            retry_tokens,
+            retry_max_completion,
+            rate_state,
+        )
+        _record_request(rate_state, retry_tokens)
+
+        if retry_meta.get("status") == "success" and retry_result:
+            recovered = _extract_and_sanitize_wrappers(chunk, lang_key, retry_result)
+            logger.info(
+                "Recovered chunk %s/%s [%s] with reduced source limit=%s chars (wrappers=%s).",
+                chunk_idx + 1,
+                total_chunks,
+                lang_key,
+                char_limit,
+                len(recovered),
+            )
+            return recovered, []
+
+    # Pass 2: if whole-chunk retries still fail, split into per-function micro requests.
+    unresolved: list = []
+    seen_recovered = set()
+    for fn_wrapper in chunk:
+        fn_name = str(fn_wrapper.get("function_name") or "?")
+        micro_chunk = _truncate_wrappers_for_retry([fn_wrapper], MANUAL_REVIEW_MICRO_LIMIT)
+        micro_prompt = build_function_chunk_prompt(
+            lang_key=lang_key,
+            modules=modules,
+            sink_modules=sink_modules,
+            sink_reason=sink_reason,
+            wrappers=micro_chunk,
+        )
+        micro_payload = {
+            "language": language,
+            "results": {
+                lang_key: {
+                    "modules": modules,
+                    "wrapper_functions": micro_chunk,
+                }
+            },
+        }
+        micro_prompt_tokens = _estimate_prompt_tokens(micro_prompt)
+        micro_max_completion = _pick_completion_tokens(micro_prompt_tokens)
+        micro_tokens = _estimate_request_tokens(micro_prompt, micro_max_completion)
+
+        if micro_tokens > SINGLE_REQUEST_TOKEN_BUDGET and micro_max_completion <= 64:
+            logger.info(
+                "Skipping micro-recovery for function %s [%s]: still over request budget "
+                "(est=%s, budget=%s).",
+                fn_name,
+                lang_key,
+                micro_tokens,
+                SINGLE_REQUEST_TOKEN_BUDGET,
+            )
+            unresolved.append(fn_name)
+            continue
+
+        await _rate_limit_wait(rate_state, micro_tokens)
+        micro_result, micro_meta = await _call_groq_with_retry(
+            micro_payload,
+            micro_prompt,
+            chunk_idx,
+            total_chunks,
+            lang_key,
+            micro_tokens,
+            micro_max_completion,
+            rate_state,
+        )
+        _record_request(rate_state, micro_tokens)
+
+        if micro_meta.get("status") == "success" and micro_result:
+            micro_wrappers = _extract_and_sanitize_wrappers([fn_wrapper], lang_key, micro_result)
+            for row in micro_wrappers:
+                key = (str(row.get("function_name") or ""), str(row.get("file") or ""), str(row.get("vulnerability_type") or ""))
+                if key not in seen_recovered:
+                    seen_recovered.add(key)
+                    recovered.append(row)
+            continue
+
+        unresolved.append(fn_name)
+
+    logger.info(
+        "Micro-recovery for chunk %s/%s [%s]: recovered=%s unresolved=%s",
+        chunk_idx + 1,
+        total_chunks,
+        lang_key,
+        len(recovered),
+        len(unresolved),
+    )
+    return recovered, unresolved
 
 
 # ─────────────────────────────────────────────────────────────────────────────

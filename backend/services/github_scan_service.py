@@ -68,7 +68,7 @@ jobs:
               'coverage','.tox','egg-info','.eggs','site-packages',
               '.github','.vscode','vendor','bower_components',
           ]);
-          const JS_EXTS = new Set(['.js','.jsx','.ts','.tsx','.mjs','.cjs']);
+          const JS_EXTS = new Set(['.js','.jsx','.ts','.tsx','.mjs','.cjs','.mts','.cts']);
           const FRONTEND_IMPORTS = new Set(['react','vue','next','solid-js']);
           const MAX_JS_FILES = 2500;
           const MAX_JS_FILE_BYTES = 1024 * 1024;
@@ -100,6 +100,12 @@ jobs:
               'deserialize','unserialize','parse','parseString','load'
           ]);
 
+          const PLAINTEXT_PW_RE = /(password|passwd|pwd)\s*={2,3}|={2,3}\s*(password|passwd|pwd)/i;
+          const ROUTE_METHODS = new Set(['get','post','put','delete','patch','all','use','route']);
+          const ROUTE_OBJECT_HINT_RE = /(app|router|route|blueprint|bp|api|fastify|server)/i;
+          const AUTH_HINT_RE = /(jwt_required|login_required|requires_auth|auth_required|token_required|authenticated|depends|get_current_user|current_user|requireauth|passport|verifytoken|isauthenticated|req\.user|ensureauth)/i;
+          const SENSITIVE_ROUTE_RE = /(debug|admin|internal|secret|password|passwd|token|users|accounts)/i;
+
           function walkDir(dir, cb) {
               let entries;
               try { entries = fs.readdirSync(dir, { withFileTypes: true }); }
@@ -119,33 +125,65 @@ jobs:
 
           function parseFile(fp, src) {
               const ext = path.extname(fp);
-              const plugins = [
+              const basePlugins = [
                   'dynamicImport','optionalChaining','nullishCoalescingOperator',
                   'classProperties','classPrivateProperties','classPrivateMethods',
                   'exportDefaultFrom','exportNamespaceFrom','decorators-legacy',
-                  'topLevelAwait','importMeta','objectRestSpread',
+                  'topLevelAwait','importMeta','objectRestSpread','hashbang',
               ];
-              if (ext === '.ts' || ext === '.tsx') plugins.push('typescript');
-              if (ext === '.jsx' || ext === '.tsx' || ext === '.js' || ext === '.mjs')
-                  plugins.push('jsx');
-              try {
-                  return parse(src, {
-                      sourceType: 'unambiguous',
-                      allowImportExportEverywhere: true,
-                      allowReturnOutsideFunction: true,
-                      allowSuperOutsideMethod: true,
-                      plugins,
-                      errorRecovery: true,
-                  });
-              } catch(e) { return null; }
+              if (ext === '.ts' || ext === '.tsx' || ext === '.mts' || ext === '.cts') {
+                  basePlugins.push('typescript');
+              }
+              if (ext === '.jsx' || ext === '.tsx' || ext === '.js' || ext === '.mjs') {
+                  basePlugins.push('jsx');
+              }
+
+              const pluginVariants = [basePlugins];
+              if (ext === '.js' || ext === '.jsx' || ext === '.mjs' || ext === '.cjs') {
+                  pluginVariants.push([...basePlugins, 'flow', 'flowComments']);
+              }
+
+              for (const sourceType of ['unambiguous', 'module', 'script']) {
+                  for (const plugins of pluginVariants) {
+                      try {
+                          const ast = parse(src, {
+                              sourceType,
+                              allowImportExportEverywhere: true,
+                              allowReturnOutsideFunction: true,
+                              allowSuperOutsideMethod: true,
+                              plugins,
+                              errorRecovery: true,
+                          });
+                          if (ast && ast.program) return ast;
+                      } catch(e) {
+                          // Try next parser mode/plugin set.
+                      }
+                  }
+              }
+              return null;
+          }
+
+          function memberProp(node) {
+              if (!node || !node.property) return null;
+              if (node.computed) {
+                  if (node.property.type === 'StringLiteral') return node.property.value;
+                  if (node.property.type === 'Identifier') return node.property.name;
+                  return null;
+              }
+              return node.property.name || node.property.value || null;
           }
 
           function callName(node) {
               if (!node) return null;
               if (node.type === 'Identifier') return node.name;
-              if (node.type === 'MemberExpression' && !node.computed) {
+              if (node.type === 'ThisExpression') return 'this';
+              if (node.type === 'Super') return 'super';
+              if (node.type === 'CallExpression' || node.type === 'OptionalCallExpression') {
+                  return callName(node.callee);
+              }
+              if (node.type === 'MemberExpression' || node.type === 'OptionalMemberExpression') {
                   const o = callName(node.object);
-                  const p = node.property.name || node.property.value;
+                  const p = memberProp(node);
                   return o && p ? o + '.' + p : (p || o);
               }
               return null;
@@ -170,6 +208,34 @@ jobs:
                               alias[s.local.name] = mod;
                       }
                   }
+
+                  if (node.type === 'ImportExpression' && node.source && node.source.value) {
+                      const mod = normMod(node.source.value);
+                      if (mod) imports.add(mod);
+                  }
+
+                  if (node.type === 'CallExpression' &&
+                      node.callee && node.callee.type === 'Identifier' &&
+                      node.callee.name === 'require' &&
+                      node.arguments && node.arguments[0] && node.arguments[0].value) {
+                      const mod = normMod(node.arguments[0].value);
+                      if (mod) imports.add(mod);
+                  }
+
+                  if (node.type === 'AssignmentExpression' &&
+                      node.right && node.right.type === 'CallExpression' &&
+                      node.right.callee && node.right.callee.type === 'Identifier' &&
+                      node.right.callee.name === 'require' &&
+                      node.right.arguments && node.right.arguments[0] && node.right.arguments[0].value) {
+                      const rawMod = node.right.arguments[0].value;
+                      const mod = normMod(rawMod);
+                      const moduleLabel = mod || String(rawMod || 'local-module');
+                      if (mod) imports.add(mod);
+                      if (node.left && node.left.type === 'Identifier') {
+                          alias[node.left.name] = moduleLabel;
+                      }
+                  }
+
                   if (node.type === 'VariableDeclaration') {
                       for (const d of node.declarations) {
                           if (d.init && d.init.type === 'CallExpression' &&
@@ -204,7 +270,7 @@ jobs:
           }
 
           function detectEnvironment(relPath, importsList) {
-              const norm = String(relPath || '').replace(/\\/g, '/').toLowerCase();
+              const norm = String(relPath || '').replace(/\\\\/g, '/').toLowerCase();
               const isTsxJsx = /\.(tsx|jsx)$/i.test(norm);
               const hasFrontendPath = /\/(components|pages|views|hooks|ui|layouts)\//i.test(norm);
               const hasFrontendImport = (importsList || []).some((i) => FRONTEND_IMPORTS.has(String(i || '').toLowerCase()));
@@ -244,11 +310,15 @@ jobs:
               function visit(node) {
                   if (!node || typeof node !== 'object') return;
                   if (node !== fnNode && isFn(node)) return;
-                  if (node.type === 'CallExpression') {
+                  if (node.type === 'CallExpression' || node.type === 'OptionalCallExpression') {
                       const cn = callName(node.callee);
                       if (cn) {
                           const root = cn.split('.')[0];
-                          const method = cn.includes('.') ? cn.split('.').pop() : null;
+                          const calleeMethod = (
+                              node.callee &&
+                              (node.callee.type === 'MemberExpression' || node.callee.type === 'OptionalMemberExpression')
+                          ) ? memberProp(node.callee) : null;
+                          const method = cn.includes('.') ? cn.split('.').pop() : calleeMethod;
                           if (DANGEROUS_GLOBALS.has(cn) || DANGEROUS_GLOBALS.has(root))
                               calls[cn] = 'builtins';
                           else if (aliasMap[root])
@@ -284,6 +354,15 @@ jobs:
               return calls;
           }
 
+          function nodeSource(src, node) {
+              if (!node || node.start == null || node.end == null) return '';
+              return src.substring(node.start, node.end);
+          }
+
+          function hasAuthHints(text) {
+              return AUTH_HINT_RE.test(String(text || '').toLowerCase());
+          }
+
           function extractFile(ast, src, relPath, aliasMap, importsList) {
               const wrappers = [];
               function visit(node, parent) {
@@ -291,18 +370,29 @@ jobs:
                   if (isFn(node)) {
                       const name = fnName(node, parent);
                       const calls = findCalls(node, aliasMap);
-                      if (Object.keys(calls).length > 0) {
-                          const funcSrc = (node.start != null && node.end != null)
-                              ? src.substring(node.start, node.end) : '';
-                          const funcSrcStr = funcSrc.toLowerCase();
-                          const hasAuthCheck =
-                              funcSrcStr.includes('req.user') ||
-                              funcSrcStr.includes('session') ||
-                              funcSrcStr.includes('jwt') ||
-                              funcSrcStr.includes('current_user') ||
-                              funcSrcStr.includes('user_id');
-                          const ls = node.loc ? node.loc.start.line : 1;
-                          const le = node.loc ? node.loc.end.line : ls;
+                      const funcSrc = nodeSource(src, node);
+                      const funcSrcStr = funcSrc.toLowerCase();
+                      const hasAuthCheck =
+                          funcSrcStr.includes('req.user') ||
+                          funcSrcStr.includes('session') ||
+                          funcSrcStr.includes('jwt') ||
+                          funcSrcStr.includes('current_user') ||
+                          funcSrcStr.includes('user_id');
+                      const ls = node.loc ? node.loc.start.line : 1;
+                      const le = node.loc ? node.loc.end.line : ls;
+
+                      if (PLAINTEXT_PW_RE.test(funcSrc)) {
+                          wrappers.push({
+                              function_name: name, file: relPath,
+                              environment: detectEnvironment(relPath, importsList),
+                              has_auth_check: hasAuthCheck,
+                              line_start: ls, line_end: le,
+                              calls: ['<plaintext-password-comparison>'],
+                              modules_used: ['<anti-pattern>'],
+                              source_code: funcSrc,
+                              anti_pattern: 'plaintext_password_comparison',
+                          });
+                      } else if (Object.keys(calls).length > 0) {
                           wrappers.push({
                               function_name: name, file: relPath,
                               environment: detectEnvironment(relPath, importsList),
@@ -325,6 +415,117 @@ jobs:
               return wrappers;
           }
 
+          function findUnauthenticatedRoutes(ast, src, relPath, importsList) {
+              const findings = [];
+              const fnIndex = {};
+
+              function indexFns(node, parent) {
+                  if (!node || typeof node !== 'object') return;
+                  if (isFn(node)) {
+                      const nm = fnName(node, parent);
+                      if (nm && !nm.startsWith('<')) fnIndex[nm] = node;
+                  }
+                  for (const k of Object.keys(node)) {
+                      if (k==='type'||k==='start'||k==='end'||k==='loc') continue;
+                      const v = node[k];
+                      if (Array.isArray(v)) v.forEach(c => { if (c && c.type) indexFns(c, node); });
+                      else if (v && typeof v === 'object' && v.type) indexFns(v, node);
+                  }
+              }
+
+              function routePathArg(arg) {
+                  if (!arg) return '';
+                  if (arg.type === 'StringLiteral') return String(arg.value || '');
+                  if (arg.type === 'TemplateLiteral' && Array.isArray(arg.quasis) && arg.quasis.length === 1) {
+                      return String((arg.quasis[0].value && arg.quasis[0].value.cooked) || '');
+                  }
+                  return '';
+              }
+
+              indexFns(ast.program || ast, null);
+
+              function visit(node) {
+                  if (!node || typeof node !== 'object') return;
+
+                  if (node.type === 'CallExpression' && node.callee && node.callee.type === 'MemberExpression' && !node.callee.computed) {
+                      const method = String(node.callee.property && (node.callee.property.name || node.callee.property.value) || '').toLowerCase();
+                      const calleeName = String(callName(node.callee) || '').toLowerCase();
+
+                      const isRoute = (ROUTE_METHODS.has(method) || method === 'route') && ROUTE_OBJECT_HINT_RE.test(calleeName);
+                      if (isRoute) {
+                          const routePath = routePathArg((node.arguments || [])[0]);
+                          const pathSignal = `${routePath} ${calleeName}`.trim();
+                          if (SENSITIVE_ROUTE_RE.test(pathSignal)) {
+                              const routeArgs = (node.arguments || []).slice(1);
+                              if (routeArgs.length > 0) {
+                                  const hasAuthMiddleware = routeArgs.some((a) => {
+                                      const n1 = String(callName(a) || '').toLowerCase();
+                                      const n2 = String(a && a.callee ? callName(a.callee) || '' : '').toLowerCase();
+                                      const txt = String(nodeSource(src, a) || '').toLowerCase();
+                                      return hasAuthHints(n1) || hasAuthHints(n2) || hasAuthHints(txt);
+                                  });
+
+                                  if (!hasAuthMiddleware) {
+                                      const handler = routeArgs[routeArgs.length - 1];
+                                      let handlerName = '<route-handler>';
+                                      let funcSrc = nodeSource(src, node);
+                                      let ls = node.loc ? node.loc.start.line : 1;
+                                      let le = node.loc ? node.loc.end.line : ls;
+
+                                      if (isFn(handler)) {
+                                          handlerName = fnName(handler, node);
+                                          const hs = nodeSource(src, handler);
+                                          if (hs) funcSrc = hs;
+                                          if (handler.loc) {
+                                              ls = handler.loc.start.line;
+                                              le = handler.loc.end.line || ls;
+                                          }
+                                      } else if (handler && handler.type === 'Identifier') {
+                                          handlerName = handler.name;
+                                          const ref = fnIndex[handler.name];
+                                          if (ref) {
+                                              const hs = nodeSource(src, ref);
+                                              if (hs) funcSrc = hs;
+                                              if (ref.loc) {
+                                                  ls = ref.loc.start.line;
+                                                  le = ref.loc.end.line || ls;
+                                              }
+                                          }
+                                      }
+
+                                      if (!hasAuthHints(funcSrc)) {
+                                          findings.push({
+                                              function_name: handlerName,
+                                              file: relPath,
+                                              environment: detectEnvironment(relPath, importsList),
+                                              has_auth_check: false,
+                                              line_start: ls,
+                                              line_end: le,
+                                              calls: ['<unauthenticated-route>'],
+                                              modules_used: ['<anti-pattern>'],
+                                              source_code: funcSrc,
+                                              anti_pattern: 'missing_authentication',
+                                              route_paths: routePath ? [routePath] : [],
+                                          });
+                                      }
+                                  }
+                              }
+                          }
+                      }
+                  }
+
+                  for (const k of Object.keys(node)) {
+                      if (k==='type'||k==='start'||k==='end'||k==='loc') continue;
+                      const v = node[k];
+                      if (Array.isArray(v)) v.forEach(c => { if (c&&c.type) visit(c); });
+                      else if (v && typeof v==='object' && v.type) visit(v);
+                  }
+              }
+
+              visit(ast.program || ast);
+              return findings;
+          }
+
           const scanRoot = process.argv[2] || '.';
           const displayRoot = process.argv[3] || scanRoot;
           const manifestPkgs = JSON.parse(process.argv[4] || '[]');
@@ -332,7 +533,9 @@ jobs:
           const allImports = new Set();
           const allWrappers = [];
           let scannedJsFiles = 0;
+          let parseFailedJsFiles = 0;
           let skippedLargeJsFiles = 0;
+          const parseErrorSamples = [];
           let limitExceeded = false;
           let limitReason = '';
 
@@ -355,12 +558,31 @@ jobs:
               try { src = fs.readFileSync(fp, 'utf8'); } catch(e) { return; }
               scannedJsFiles += 1;
               const ast = parseFile(fp, src);
-              if (!ast || !ast.program) return true;
-              const rel = path.relative(displayRoot, fp);
+              if (!ast || !ast.program) {
+                  parseFailedJsFiles += 1;
+                  if (parseErrorSamples.length < 25) {
+                      parseErrorSamples.push(path.relative(displayRoot, fp).replace(/\\\\/g, '/'));
+                  }
+                  return true;
+              }
+              const rel = path.relative(displayRoot, fp).replace(/\\\\/g, '/');
               const { imports, alias } = collectImports(ast.program.body);
               imports.forEach(i => allImports.add(i));
               const wrappers = extractFile(ast, src, rel, alias, imports);
-              for (const w of wrappers) {
+              const unauthRoutes = findUnauthenticatedRoutes(ast, src, rel, imports);
+              const combined = [...wrappers];
+              const localSeen = new Set(
+                  combined.map((w) => `${w.function_name}|${w.file}|${w.line_start}|${w.line_end}`)
+              );
+              for (const route of unauthRoutes) {
+                  const key = `${route.function_name}|${route.file}|${route.line_start}|${route.line_end}`;
+                  if (!localSeen.has(key)) {
+                      localSeen.add(key);
+                      combined.push(route);
+                  }
+              }
+
+              for (const w of combined) {
                   if (allWrappers.length >= MAX_JS_WRAPPERS) {
                       limitExceeded = true;
                       limitReason = `JS wrapper limit exceeded (${MAX_JS_WRAPPERS})`;
@@ -390,11 +612,13 @@ jobs:
               limit_reason: limitReason,
               limits: {
                   scanned_files: scannedJsFiles,
+                  parse_failed_files: parseFailedJsFiles,
                   skipped_large_files: skippedLargeJsFiles,
                   max_files: MAX_JS_FILES,
                   max_file_bytes: MAX_JS_FILE_BYTES,
                   max_wrappers: MAX_JS_WRAPPERS,
               },
+              parse_error_samples: parseErrorSamples,
           }));
           JS_EXTRACTOR_SCRIPT
 
@@ -467,7 +691,7 @@ jobs:
           def _lang_exts(language):
               if language == "python":
                   return (".py",)
-              return (".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs")
+              return (".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".mts", ".cts")
 
           def _has_lang_file_immediate(root_path, language):
               exts = _lang_exts(language)
@@ -782,12 +1006,44 @@ jobs:
                       capture_output=True, text=True, timeout=120
                   )
                   if result.returncode != 0:
-                      print(f"JS extractor error: {result.stderr[:500]}", file=sys.stderr)
-                      return {"from_imports": [], "wrappers": []}
-                  return json.loads(result.stdout)
+                      err_sample = (result.stderr or "")[:500]
+                      print(f"JS extractor error: {err_sample}", file=sys.stderr)
+                      return {
+                          "from_imports": [],
+                          "wrappers": [],
+                          "extractor_error": "node_exit_nonzero",
+                          "extractor_error_detail": err_sample,
+                      }
+
+                  raw = (result.stdout or "").strip()
+                  if not raw:
+                      err_sample = (result.stderr or "")[:500]
+                      return {
+                          "from_imports": [],
+                          "wrappers": [],
+                          "extractor_error": "empty_stdout",
+                          "extractor_error_detail": err_sample,
+                      }
+
+                  try:
+                      return json.loads(raw)
+                  except Exception as je:
+                      print(f"JS extractor returned invalid JSON: {je}", file=sys.stderr)
+                      return {
+                          "from_imports": [],
+                          "wrappers": [],
+                          "extractor_error": "invalid_json_stdout",
+                          "extractor_error_detail": str(je),
+                          "extractor_stdout_sample": raw[:500],
+                      }
               except Exception as e:
                   print(f"JS extractor failed: {e}", file=sys.stderr)
-                  return {"from_imports": [], "wrappers": []}
+                  return {
+                      "from_imports": [],
+                      "wrappers": [],
+                      "extractor_error": "python_wrapper_exception",
+                      "extractor_error_detail": str(e),
+                  }
 
           # ─── PYTHON WRAPPER EXTRACTION (AST) ─────────────────────────────────────────
           def _get_call_name(call_node):
@@ -826,6 +1082,11 @@ jobs:
               # LDAP & XPath
               "search_s", "xpath"
           }
+
+          _PLAINTEXT_PW_RE = re.compile(
+              r"(password|passwd|pwd)\s*==|==\s*(password|passwd|pwd)",
+              re.IGNORECASE,
+          )
 
           def extract_python_wrappers(scan_root, all_modules, display_root, target_files=None, limit_state=None):
               # Find every function that:
@@ -945,16 +1206,30 @@ jobs:
                                       method = call_str.rsplit(".", 1)[-1]
                                       if method in DANGEROUS_SINK_METHODS:
                                           calls_found[call_str] = f"<object>.{method}"
-                          if calls_found:
-                              func_src = ast.get_source_segment(source, node) or ""
-                              src_low = func_src.lower()
-                              has_auth_check = (
-                                  "req.user" in src_low or
-                                  "session" in src_low or
-                                  "jwt" in src_low or
-                                  "current_user" in src_low or
-                                  "user_id" in src_low
-                              )
+                          func_src = ast.get_source_segment(source, node) or ""
+                          src_low = func_src.lower()
+                          has_auth_check = (
+                              "req.user" in src_low or
+                              "session" in src_low or
+                              "jwt" in src_low or
+                              "current_user" in src_low or
+                              "user_id" in src_low
+                          )
+
+                          if _PLAINTEXT_PW_RE.search(func_src):
+                              wrappers.append({
+                                  "function_name": node.name,
+                                  "file": rel,
+                                  "environment": detect_environment(rel),
+                                  "has_auth_check": has_auth_check,
+                                  "line_start": node.lineno,
+                                  "line_end": node.end_lineno,
+                                  "calls": ["<plaintext-password-comparison>"],
+                                  "modules_used": ["<anti-pattern>"],
+                                  "source_code": func_src,
+                                  "anti_pattern": "plaintext_password_comparison",
+                              })
+                          elif calls_found:
                               wrappers.append({
                                   "function_name": node.name,
                                   "file": rel,
@@ -969,6 +1244,111 @@ jobs:
                   if reached_wrapper_limit:
                       break
               return wrappers
+
+          def find_unauthenticated_routes(scan_root, display_root, target_files=None, limit_state=None):
+              """
+              Find Flask/FastAPI route handler functions that:
+              - Are decorated with route decorators
+              - Do NOT have auth decorators or body-level auth checks
+              - Have sensitive path/name signals
+              """
+              ROUTE_DECORATORS = {
+                  "app.route", "router.get", "router.post", "router.put", "router.delete",
+                  "router.patch", "blueprint.route", "bp.route", "api.route",
+              }
+              AUTH_DECORATORS = {
+                  "jwt_required", "login_required", "requires_auth", "auth_required",
+                  "token_required", "authenticated", "depends", "current_user", "get_current_user",
+              }
+              SENSITIVE_PATH_RE = re.compile(
+                  r"(debug|admin|internal|secret|password|passwd|token|users|accounts)",
+                  re.IGNORECASE,
+              )
+
+              def _decorator_name(dec):
+                  target = dec.func if isinstance(dec, ast.Call) else dec
+                  if isinstance(target, ast.Name):
+                      return target.id
+                  if isinstance(target, ast.Attribute):
+                      parts = []
+                      node = target
+                      while isinstance(node, ast.Attribute):
+                          parts.append(node.attr)
+                          node = node.value
+                      if isinstance(node, ast.Name):
+                          parts.append(node.id)
+                      return ".".join(reversed(parts)) if parts else ""
+                  return ""
+
+              findings = []
+              for fp in _iter_target_python_files(scan_root, target_files=target_files, limit_state=limit_state):
+                  try:
+                      with open(fp, "r", errors="ignore") as f:
+                          source = f.read()
+                      tree = ast.parse(source, filename=fp)
+                  except Exception:
+                      continue
+
+                  rel = os.path.relpath(fp, display_root).replace("\\\\", "/")
+
+                  for node in ast.walk(tree):
+                      if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                          continue
+
+                      decorator_names = []
+                      route_paths = []
+                      for dec in node.decorator_list:
+                          name = _decorator_name(dec)
+                          if name:
+                              decorator_names.append(name)
+
+                          if isinstance(dec, ast.Call):
+                              for arg in dec.args:
+                                  if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                                      route_paths.append(arg.value)
+                              for kw in dec.keywords or []:
+                                  if kw.arg in {"path", "rule"} and isinstance(kw.value, ast.Constant) and isinstance(kw.value.value, str):
+                                      route_paths.append(kw.value.value)
+
+                      deco_lower = [d.lower() for d in decorator_names]
+                      is_route = any(
+                          any(d == rd or d.endswith(rd) for rd in ROUTE_DECORATORS)
+                          for d in deco_lower
+                      )
+                      if not is_route:
+                          continue
+
+                      has_auth = any(
+                          any(auth in d for auth in AUTH_DECORATORS)
+                          for d in deco_lower
+                      )
+                      if has_auth:
+                          continue
+
+                      func_src = ast.get_source_segment(source, node) or ""
+                      src_lower = func_src.lower()
+                      if any(auth in src_lower for auth in AUTH_DECORATORS):
+                          continue
+
+                      full_path_signal = " ".join(route_paths) + " " + node.name
+                      if not SENSITIVE_PATH_RE.search(full_path_signal):
+                          continue
+
+                      findings.append({
+                          "function_name": node.name,
+                          "file": rel,
+                          "environment": "BACKEND (Python)",
+                          "has_auth_check": False,
+                          "line_start": node.lineno,
+                          "line_end": node.end_lineno,
+                          "calls": ["<unauthenticated-route>"],
+                          "modules_used": ["<anti-pattern>"],
+                          "source_code": func_src,
+                          "anti_pattern": "missing_authentication",
+                          "route_paths": route_paths,
+                      })
+
+              return findings
 
           # ─── ORCHESTRATOR ─────────────────────────────────────────────────────────────
           def _ensure_lang_section(results, lang):
@@ -1037,6 +1417,7 @@ jobs:
               scan_targets = []
               wrapper_seen = {"python": set(), "react": set()}
               repo_limit_errors = []
+              extractor_warnings = []
               total_wrappers = 0
 
               for t in targets:
@@ -1067,6 +1448,34 @@ jobs:
                           target_files=(changed_for_target if changed_files_abs else None),
                           limit_state=wrapper_limit_state,
                       )
+
+                      unauth_routes = find_unauthenticated_routes(
+                          scan_abs,
+                          repo_root,
+                          target_files=(changed_for_target if changed_files_abs else None),
+                          limit_state=wrapper_limit_state,
+                      )
+                      if unauth_routes:
+                          local_seen = {
+                              (
+                                  w.get("function_name"),
+                                  w.get("file"),
+                                  w.get("line_start"),
+                                  w.get("line_end"),
+                              )
+                              for w in wrappers
+                          }
+                          for route in unauth_routes:
+                              key = (
+                                  route.get("function_name"),
+                                  route.get("file"),
+                                  route.get("line_start"),
+                                  route.get("line_end"),
+                              )
+                              if key not in local_seen:
+                                  local_seen.add(key)
+                                  wrappers.append(route)
+
                       if import_limit_state.get("exceeded"):
                           repo_limit_errors.append({
                               "language": lang,
@@ -1096,6 +1505,18 @@ jobs:
                       import_mods = js_result.get("from_imports", [])
                       all_modules = sorted(set(manifest_pkgs) | set(import_mods))
                       wrappers = js_result.get("wrappers", [])
+                      js_limits = js_result.get("limits") if isinstance(js_result.get("limits"), dict) else {}
+                      js_parse_samples = js_result.get("parse_error_samples")
+                      extractor_error = js_result.get("extractor_error")
+
+                      if extractor_error:
+                          extractor_warnings.append({
+                              "language": lang,
+                              "scan_path": t["scan_path"],
+                              "error": extractor_error,
+                              "detail": js_result.get("extractor_error_detail", ""),
+                              "stdout_sample": js_result.get("extractor_stdout_sample", ""),
+                          })
                       if js_result.get("limit_exceeded"):
                           repo_limit_errors.append({
                               "language": lang,
@@ -1109,14 +1530,21 @@ jobs:
                       "all": all_modules,
                   }
 
-                  scan_targets.append({
+                  target_entry = {
                       "language": lang,
                       "root_path": t["root_path"],
                       "scan_path": t["scan_path"],
                       "anchor_files": t["anchor_files"],
                       "modules": target_modules,
                       "wrapper_count": len(wrappers),
-                  })
+                  }
+                  if lang == "react":
+                      target_entry["js_limits"] = js_limits
+                      if isinstance(js_parse_samples, list) and js_parse_samples:
+                          target_entry["js_parse_error_samples"] = js_parse_samples
+                      if extractor_error:
+                          target_entry["js_extractor_error"] = extractor_error
+                  scan_targets.append(target_entry)
 
                   total_wrappers += len(wrappers)
                   if total_wrappers > MAX_TOTAL_WRAPPERS:
@@ -1157,6 +1585,7 @@ jobs:
                           "anchors_found": len(found_anchors),
                           "targets_selected": len(scan_targets),
                           "phantom_roots": sorted(phantom_roots),
+                          "extractor_warnings": extractor_warnings,
                       },
                   }
 
@@ -1176,6 +1605,7 @@ jobs:
                       "anchors_found": len(found_anchors),
                       "targets_selected": len(scan_targets),
                       "phantom_roots_skipped": phantom_roots,
+                      "extractor_warnings": extractor_warnings,
                   },
               }
 
@@ -1312,7 +1742,7 @@ jobs:
             EXTRA_CONFIG="--config .fixora-rules.yml"
           fi
           FIXORA_EXCLUDE="--exclude '.github/workflows/fixora-scan.yml' --exclude '.github/workflows/fixora-wrapper-hunter.yml' --exclude '.fixora-rules.yml' --exclude '.semgrep.yml' --exclude 'semgrep_rules.yml' --exclude 'fixora_wrapper_hunter.yml' --exclude '**/fixora_wrapper_hunter.yml' --exclude '**/semgrep_rules.yml'"
-          semgrep scan --config "p/default" --config "p/security-audit" --config "p/owasp-top-ten" $EXTRA_CONFIG $FIXORA_EXCLUDE --json --output semgrep-results.json . || true
+          semgrep scan --config "p/default" --config "p/security-audit" --config "p/owasp-top-ten" --config "p/python" --config "p/flask" --config "p/django" --config "p/jwt" --config "p/secrets" --config "p/javascript" --config "p/nodejs" --config "p/react" $EXTRA_CONFIG $FIXORA_EXCLUDE --json --output semgrep-results.json . || true
 
       - name: Run Semgrep Scan (Diff)
         if: ${{ (github.event.client_payload.scan_mode || github.event.inputs.scan_mode) == 'diff' && (github.event.client_payload.base_commit || github.event.inputs.base_commit) != '' }}
@@ -1324,27 +1754,31 @@ jobs:
           fi
           BASE_COMMIT="${{ github.event.client_payload.base_commit || github.event.inputs.base_commit }}"
           git diff --name-only $BASE_COMMIT HEAD > all_changed_files.txt
-                    # Exclude Fixora scanner/config files so Semgrep doesn't flag them
-                    grep -v -E 'fixora-scan\.yml|fixora-wrapper-hunter\.yml|fixora_wrapper_hunter\.yml|\.fixora-rules\.yml|\.semgrep\.yml|semgrep_rules\.yml' all_changed_files.txt > changed_files.txt || true
-                    FIXORA_EXCLUDE="--exclude '.github/workflows/fixora-scan.yml' --exclude '.github/workflows/fixora-wrapper-hunter.yml' --exclude '.fixora-rules.yml' --exclude '.semgrep.yml' --exclude 'semgrep_rules.yml' --exclude 'fixora_wrapper_hunter.yml' --exclude '**/fixora_wrapper_hunter.yml' --exclude '**/semgrep_rules.yml'"
+          # Exclude Fixora scanner/config files so Semgrep doesn't flag them
+          grep -v -E 'fixora-scan\.yml|fixora-wrapper-hunter\.yml|fixora_wrapper_hunter\.yml|\.fixora-rules\.yml|\.semgrep\.yml|semgrep_rules\.yml' all_changed_files.txt > changed_files.txt || true
+          FIXORA_EXCLUDE="--exclude '.github/workflows/fixora-scan.yml' --exclude '.github/workflows/fixora-wrapper-hunter.yml' --exclude '.fixora-rules.yml' --exclude '.semgrep.yml' --exclude 'semgrep_rules.yml' --exclude 'fixora_wrapper_hunter.yml' --exclude '**/fixora_wrapper_hunter.yml' --exclude '**/semgrep_rules.yml'"
           if [ -s changed_files.txt ]; then
-            semgrep scan --config "p/default" --config "p/security-audit" --config "p/owasp-top-ten" $EXTRA_CONFIG $FIXORA_EXCLUDE --json --output semgrep-results.json $(cat changed_files.txt | tr '\\n' ' ') || true
+            semgrep scan --config "p/default" --config "p/security-audit" --config "p/owasp-top-ten" --config "p/python" --config "p/flask" --config "p/django" --config "p/jwt" --config "p/secrets" --config "p/javascript" --config "p/nodejs" --config "p/react" $EXTRA_CONFIG $FIXORA_EXCLUDE --json --output semgrep-results.json $(cat changed_files.txt | tr '\\n' ' ') || true
           else
             echo '{"results": [], "errors": []}' > semgrep-results.json
           fi
 
-      - name: Send Results to Fixora
+      - name: Send Results to Fixora Backend
+        if: always()
         run: |
           SCAN_ID="${{ github.event.client_payload.scan_id || github.event.inputs.scan_id }}"
           TARGET_BRANCH="${{ github.event.client_payload.target_branch || github.event.inputs.target_branch }}"
           SCAN_MODE="${{ github.event.client_payload.scan_mode || github.event.inputs.scan_mode }}"
-          
-          if [ -f semgrep-results.json ]; then
-            echo "Sending results to Fixora backend: ${{ secrets.FIXORA_API_URL }}"
-            echo "Using API token: ${FIXORA_API_TOKEN:0:10}... (masked for security)"
-            
-            # Create payload
-            cat > payload.json << EOF
+
+          # Force safe fallback so backend always receives a completion payload.
+          if [ -s semgrep-results.json ]; then
+            echo "Results found. Sending to backend..."
+          else
+            echo "semgrep-results.json is missing or empty! Using safe fallback to unlock frontend."
+            echo '{"results": [], "errors": []}' > semgrep-results.json
+          fi
+
+          cat > payload.json << EOF
           {
             "scan_id": "$SCAN_ID",
             "repository": "${{ github.repository }}",
@@ -1354,37 +1788,34 @@ jobs:
             "results": $(cat semgrep-results.json)
           }
           EOF
-            
-            # Send to Fixora with retry logic
-            MAX_RETRIES=3
-            RETRY_COUNT=0
-            
-            while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-              echo "Attempting to send results (attempt $((RETRY_COUNT + 1))/$MAX_RETRIES)..."
-              if curl -X POST "${{ secrets.FIXORA_API_URL }}/api/scan/webhook/results" \
-                -H "Content-Type: application/json" \
-                -H "X-Fixora-Token: ${{ secrets.FIXORA_API_TOKEN }}" \
-                -d @payload.json \
-                --max-time 30 \
-                --retry 2 \
-                --retry-delay 5; then
-                echo "✅ Results sent successfully"
-                exit 0
-              else
-                RETRY_COUNT=$((RETRY_COUNT + 1))
-                echo "⚠️  Attempt $RETRY_COUNT failed. Retrying..."
-                sleep 5
-              fi
-            done
-            
-            echo "❌ Failed to send results after $MAX_RETRIES attempts"
-            echo "This usually means your Fixora backend is not publicly accessible."
-            echo "For local development, use ngrok or similar to expose your backend."
-            echo "Backend URL configured: ${{ secrets.FIXORA_API_URL }}"
-            exit 1
-          else
-            echo "⚠️  No results file found"
-          fi
+
+          # Send to Fixora with retry logic
+          MAX_RETRIES=3
+          RETRY_COUNT=0
+
+          while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+            echo "Attempting to send results (attempt $((RETRY_COUNT + 1))/$MAX_RETRIES)..."
+            if curl -L -X POST "${{ secrets.FIXORA_API_URL }}/api/scan/webhook/results" \
+              -H "Content-Type: application/json" \
+              -H "X-Fixora-Token: ${{ secrets.FIXORA_API_TOKEN }}" \
+              --data-binary @payload.json \
+              --max-time 30 \
+              --retry 2 \
+              --retry-delay 5; then
+              echo "✅ Results sent successfully"
+              exit 0
+            else
+              RETRY_COUNT=$((RETRY_COUNT + 1))
+              echo "⚠️  Attempt $RETRY_COUNT failed. Retrying..."
+              sleep 5
+            fi
+          done
+
+          echo "❌ Failed to send results after $MAX_RETRIES attempts"
+          echo "This usually means your Fixora backend is not publicly accessible."
+          echo "For local development, use ngrok or similar to expose your backend."
+          echo "Backend URL configured: ${{ secrets.FIXORA_API_URL }}"
+          exit 1
 
       - name: Upload Scan Artifacts
         uses: actions/upload-artifact@v4
