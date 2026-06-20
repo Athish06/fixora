@@ -1015,6 +1015,21 @@ const RepositoryDetail = () => {
           )}
         </AnimatePresence>
 
+        {/* AI Analysis Warning Banner */}
+        {scans.length > 0 && scans[0].ai_analysis_warning && (
+          <motion.div
+            initial={{ opacity: 0, y: -10 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="bg-yellow-500/10 border border-yellow-500/20 rounded-lg p-4 flex gap-3 text-yellow-600 dark:text-yellow-400"
+          >
+            <AlertTriangle className="w-5 h-5 shrink-0" />
+            <div className="text-sm">
+              <span className="font-semibold block mb-1">AI Analysis Warning (Latest Scan)</span>
+              {scans[0].ai_analysis_warning}
+            </div>
+          </motion.div>
+        )}
+
         {/* Branch Selector & Stats */}
         <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
           {/* Branch Selector */}

@@ -128,9 +128,9 @@ const LandingPage = () => {
         <div className="max-w-7xl mx-auto">
           <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
             {[
-              { value: '4-Phase', label: 'AI Analysis Pipeline' },
-              { value: '10x', label: 'Faster Vulnerability Detection' },
-              { value: '500k+', label: 'Lines of Code Analyzed' }
+              { value: 'Custom Rules', label: 'Dynamically generated for your codebase' },
+              { value: 'Precise Detection', label: 'Reduces noise by filtering false positives' },
+              { value: 'Actionable Fixes', label: 'Context-aware remediation guidance' }
             ].map((stat, index) => (
               <motion.div
                 key={index}
