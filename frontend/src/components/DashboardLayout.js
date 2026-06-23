@@ -10,7 +10,8 @@ import {
   X,
   PanelLeftClose,
   ChevronRight,
-  BarChart2
+  BarChart2,
+  Infinity
 } from 'lucide-react';
 import { useAuthStore } from '../store/authStore';
 import { Button } from '../components/ui/button';
@@ -77,7 +78,7 @@ const DashboardLayout = ({ children }) => {
         <div className={`flex items-center ${sidebarCollapsed ? 'justify-center' : 'justify-between'} h-16 px-4 border-b border-border`}>
           <Link to="/dashboard" className={`flex items-center ${sidebarCollapsed ? '' : 'space-x-3'}`} data-testid="logo">
             <div className="w-8 h-8 bg-primary rounded-lg flex items-center justify-center flex-shrink-0">
-              <span className="text-primary-foreground font-bold text-base">F</span>
+              <Infinity className="w-5 h-5 text-primary-foreground" />
             </div>
             {!sidebarCollapsed && (
               <span className="text-lg font-semibold text-foreground">Fixora</span>
