@@ -9,23 +9,23 @@ const LandingPage = () => {
   const features = [
     {
       icon: Brain,
-      title: 'AI-Powered Discovery',
-      description: 'Automatically detect custom code patterns, wrappers, and sinks unique to your codebase'
+      title: 'Sink Module Identification',
+      description: 'Natively detects core execution sinks across the architecture, including SQL, NoSQL, Eval, and OS commands.'
     },
     {
       icon: Shield,
-      title: 'Smart Classification',
-      description: 'LLM-powered pattern classification reduces false positives with project-aware context'
+      title: 'LLM Wrapper Analysis',
+      description: 'Uses semantic reasoning to identify custom, repository-specific wrapper functions that abstract dangerous sinks.'
     },
     {
       icon: GitBranch,
-      title: 'Smart Remediation',
-      description: 'Get actionable fix guidance and remediation steps for every vulnerability'
+      title: 'Execution Path Tracing',
+      description: 'Evaluates contextual boundaries like authentication wrappers and application state to definitively filter false positives.'
     },
     {
       icon: Zap,
-      title: 'Real-time Scanning',
-      description: 'Scan on commits, get instant feedback on security vulnerabilities'
+      title: 'High-Fidelity Reporting',
+      description: 'Delivers definitively validated vulnerability reports, eliminating alert fatigue by surfacing only true, exploitable logic flaws.'
     }
   ];
 
@@ -94,7 +94,7 @@ const LandingPage = () => {
           >
             <h2 className="text-4xl md:text-5xl font-bold mb-4">How It Works</h2>
             <p className="text-xl text-muted-foreground max-w-2xl mx-auto">
-              Four-phase AI pipeline that understands your code like a human security expert
+              A four-phase pipeline built to systematically identify deep logic flaws and context-dependent vulnerabilities.
             </p>
           </motion.div>
 
@@ -123,60 +123,6 @@ const LandingPage = () => {
         </div>
       </section>
 
-      {/* Stats Section */}
-      <section className="py-24 px-6">
-        <div className="max-w-7xl mx-auto">
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
-            {[
-              { value: 'Custom Rules', label: 'Dynamically generated for your codebase' },
-              { value: 'Precise Detection', label: 'Reduces noise by filtering false positives' },
-              { value: 'Actionable Fixes', label: 'Context-aware remediation guidance' }
-            ].map((stat, index) => (
-              <motion.div
-                key={index}
-                initial={{ opacity: 0, scale: 0.9 }}
-                whileInView={{ opacity: 1, scale: 1 }}
-                transition={{ duration: 0.5, delay: index * 0.1 }}
-                viewport={{ once: true }}
-                className="text-center p-8 glass-card rounded-lg"
-                data-testid={`stat-${index}`}
-              >
-                <div className="text-5xl font-bold text-primary mb-2">{stat.value}</div>
-                <div className="text-lg text-muted-foreground">{stat.label}</div>
-              </motion.div>
-            ))}
-          </div>
-        </div>
-      </section>
-
-      {/* CTA Section */}
-      <section className="py-24 px-6">
-        <div className="max-w-4xl mx-auto text-center">
-          <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            whileInView={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.6 }}
-            viewport={{ once: true }}
-          >
-            <h2 className="text-4xl md:text-5xl font-bold mb-6">
-              Ready to Secure Your Code?
-            </h2>
-            <p className="text-xl text-muted-foreground mb-8">
-              Join development teams trusting AI to catch what traditional scanners miss
-            </p>
-            <Link to="/register">
-              <AnimatedButton
-                size="lg"
-                className="text-lg px-8 py-6 bg-primary hover:bg-primary/90 shadow-lg shadow-primary/20"
-                data-testid="cta-get-started-btn"
-              >
-                Start Free Trial
-                <ArrowRight className="ml-2 w-5 h-5" />
-              </AnimatedButton>
-            </Link>
-          </motion.div>
-        </div>
-      </section>
     </div>
   );
 };
