@@ -199,7 +199,7 @@ class ScanWebhookPayload(BaseModel):
     branch: str
     scan_mode: str
     commit_sha: str
-    results: SemgrepPayload
+    encoded_data: str
 
 
 class WrapperHunterPayload(BaseModel):
@@ -940,8 +940,20 @@ async def _receive_scan_results_impl(
     
     logger.info(f"Processing scan results for {payload.scan_id} - Repository: {payload.repository}, Branch: {payload.branch}")
     
-    # Process Semgrep results
-    semgrep_results = payload.results.results
+    # Decode the Base64-encoded payload (sent this way to avoid Cloudflare/Ngrok WAF blocking
+    # requests containing raw exploit-like strings from the semgrep findings)
+    try:
+        decoded_bytes = base64.b64decode(payload.encoded_data)
+        semgrep_results_dict = json.loads(decoded_bytes)
+        semgrep_results = semgrep_results_dict.get("results", [])
+        semgrep_errors = semgrep_results_dict.get("errors", [])
+    except Exception as e:
+        logger.error(f"Failed to decode base64 payload: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid encoded_data: must be a base64-encoded JSON string"
+        )
+        
     new_vulnerabilities = []
     current_scan_vulnerabilities = []
     now_iso = datetime.now().isoformat()
@@ -972,7 +984,7 @@ async def _receive_scan_results_impl(
     canonical_by_key = {}
     seen_signature_keys = set()
     for doc in existing_docs:
-        signature_key = f"{doc.get('rule_id', '')}|{doc.get('file_path', '')}"
+        signature_key = f"{doc.get('rule_id', '')}|{doc.get('file_path', '')}|{doc.get('line_number', 0)}"
         if signature_key in seen_signature_keys:
             duplicate_doc_ids.append(doc["id"])
             continue
@@ -999,22 +1011,44 @@ async def _receive_scan_results_impl(
         )
 
     # ---------------------------------------------------------
-    # 1. SMART DE-DUPLICATOR: Group by Rule ID and File Path
+    # 1. SMART DE-DUPLICATOR: Group by File Path and Line Number
     # ---------------------------------------------------------
+    # Heuristic: If we have no Python files in the results, drop Django template rules
+    has_python_files = any(r.get("path", "").endswith(".py") for r in semgrep_results)
+    
     grouped_findings = {}
     for result in semgrep_results:
         rule_id = str(result.get("check_id", "unknown-rule") or "unknown-rule").lower()
         file_path = result.get("path", "unknown-file")
+        
+        # False Positive Mitigation: Django template rules firing on Nunjucks/Swig/Generic HTML
+        if "django" in rule_id and file_path.endswith(".html") and not has_python_files:
+            continue
+
         line_num = int(result.get("start", {}).get("line", 0) or 0)
-        signature = f"{rule_id}:{file_path}"
+        
+        # Group by exact line to merge overlapping rules (e.g., standard vs AI rules on same sink)
+        signature = f"{file_path}:{line_num}"
 
         if signature not in grouped_findings:
             grouped_findings[signature] = dict(result)
+            grouped_findings[signature]["all_rule_ids"] = [rule_id]
             grouped_findings[signature]["all_affected_lines"] = [line_num] if line_num > 0 else []
         else:
-            if line_num > 0 and line_num not in grouped_findings[signature]["all_affected_lines"]:
-                grouped_findings[signature]["all_affected_lines"].append(line_num)
-                grouped_findings[signature]["all_affected_lines"].sort()
+            existing = grouped_findings[signature]
+            if rule_id not in existing["all_rule_ids"]:
+                existing["all_rule_ids"].append(rule_id)
+            
+            # Promote custom AI wrapper rules over standard Semgrep rules if both flag the same line
+            is_new_custom = "fixora-wrapper" in rule_id or "fixora-manual" in rule_id
+            is_existing_custom = "fixora-wrapper" in str(existing.get("check_id", "")).lower() or "fixora-manual" in str(existing.get("check_id", "")).lower()
+            
+            if is_new_custom and not is_existing_custom:
+                # Keep the metadata/description of the highly specific AI rule
+                new_finding = dict(result)
+                new_finding["all_rule_ids"] = existing["all_rule_ids"]
+                new_finding["all_affected_lines"] = existing["all_affected_lines"]
+                grouped_findings[signature] = new_finding
 
     unique_findings = list(grouped_findings.values())
 
@@ -1120,7 +1154,7 @@ async def _receive_scan_results_impl(
         impact_summary = metadata.get("impact_summary", None)
 
         # Stable fingerprint to identify the same finding across multiple scans.
-        signature_key = f"{rule_id}|{file_path}"
+        signature_key = f"{rule_id}|{file_path}|{primary_line}"
         legacy_key = signature_key
         fingerprint = hashlib.sha256(signature_key.encode("utf-8")).hexdigest()
 
@@ -1258,7 +1292,7 @@ async def _receive_scan_results_impl(
             "vulnerability_count": vuln_count,
             "severity_counts": severity_counts,
             "commit_sha": payload.commit_sha,
-            "errors": payload.results.errors
+            "errors": semgrep_errors
         }}
     )
     
@@ -1269,6 +1303,7 @@ async def _receive_scan_results_impl(
         {"id": repo_id},
         {"$set": {
             "last_scan": datetime.now().isoformat(),
+            "latest_scan_id": payload.scan_id,
             "vulnerability_count": vuln_count,
             "last_scan_branch": payload.branch,
             "last_commit_sha": payload.commit_sha,

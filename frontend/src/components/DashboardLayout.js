@@ -4,15 +4,13 @@ import { motion, AnimatePresence } from 'framer-motion';
 import {
   Home,
   FolderGit2,
-  Shield,
   Brain,
-  Activity,
-  Settings as SettingsIcon,
   LogOut,
   Menu,
   X,
   PanelLeftClose,
-  ChevronRight
+  ChevronRight,
+  BarChart2
 } from 'lucide-react';
 import { useAuthStore } from '../store/authStore';
 import { Button } from '../components/ui/button';
@@ -36,24 +34,27 @@ const DashboardLayout = ({ children }) => {
   // Navigation organized by sections
   const navigationSections = [
     {
-      title: 'Overview',
+      title: '',
       items: [
         { name: 'Dashboard', path: '/dashboard', icon: Home },
       ]
     },
     {
-      title: 'Security',
+      title: '',
       items: [
         { name: 'Repositories', path: '/repositories', icon: FolderGit2 },
-        { name: 'Vulnerabilities', path: '/vulnerabilities', icon: Shield },
       ]
     },
     {
-      title: 'Intelligence',
+      title: '',
       items: [
-        { name: 'AI Knowledge', path: '/ai-knowledge', icon: Brain },
-        { name: 'Activity Log', path: '/activity', icon: Activity },
-        { name: 'Settings', path: '/settings', icon: SettingsIcon },
+        { name: 'History', path: '/ai-knowledge', icon: Brain },
+      ]
+    },
+    {
+      title: '',
+      items: [
+        { name: 'Benchmark Results', path: '/results', icon: BarChart2 },
       ]
     }
   ];
@@ -107,7 +108,7 @@ const DashboardLayout = ({ children }) => {
           {navigationSections.map((section, sectionIndex) => (
             <div key={section.title} className={sectionIndex > 0 ? 'mt-6' : ''}>
               {/* Section Header */}
-              {!sidebarCollapsed && (
+              {!sidebarCollapsed && section.title && (
                 <div className="px-3 mb-2">
                   <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
                     {section.title}

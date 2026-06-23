@@ -2,11 +2,11 @@ import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useParams, Link } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import ReactMarkdown from 'react-markdown';
-import { 
-  ArrowLeft, GitBranch, FileCode, AlertTriangle, 
+import {
+  ArrowLeft, GitBranch, FileCode, AlertTriangle,
   Folder, ChevronRight, ChevronDown,
   Loader2, CheckCircle, Clock, Shield, GitCommit, Scan, Bug,
-  Terminal, Cpu, Zap, Database, Code2, Bot, RefreshCw, Copy, Check
+  Terminal, Cpu, Zap, Database, Code2, Bot, RefreshCw, Copy, Check, Eye
 } from 'lucide-react';
 import DashboardLayout from '../components/DashboardLayout';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
@@ -15,12 +15,12 @@ import { Badge } from '../components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
 import { Progress } from '../components/ui/progress';
 import { ScrollArea } from '../components/ui/scroll-area';
-import { 
-  Select, 
-  SelectContent, 
-  SelectItem, 
-  SelectTrigger, 
-  SelectValue 
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue
 } from '../components/ui/select';
 import {
   Dialog,
@@ -189,7 +189,7 @@ const FileTreeItem = ({ item, level = 0, vulnerabilitiesByFile = {}, onFileClick
   const [expanded, setExpanded] = useState(level < 2);
   const isFolder = item.type === 'folder';
   const hasChildren = item.children && item.children.length > 0;
-  
+
   // Get vulnerability count for this item (file or folder)
   const getVulnerabilityCount = (node) => {
     if (node.type === 'folder') {
@@ -198,10 +198,10 @@ const FileTreeItem = ({ item, level = 0, vulnerabilitiesByFile = {}, onFileClick
     }
     return (vulnerabilitiesByFile[node.path] || []).length;
   };
-  
+
   const vulnCount = getVulnerabilityCount(item);
   const fileVulns = !isFolder ? (vulnerabilitiesByFile[item.path] || []) : [];
-  
+
   const getFileIcon = (path) => {
     const ext = path.split('.').pop().toLowerCase();
     const iconMap = {
@@ -209,7 +209,7 @@ const FileTreeItem = ({ item, level = 0, vulnerabilitiesByFile = {}, onFileClick
       py: '🐍', java: '☕', go: '🔷', rs: '🦀',
       html: '🌐', css: '🎨', scss: '🎨', less: '🎨',
       json: '📋', yaml: '📋', yml: '📋', toml: '📋',
-      md: '📝', txt: '📄', 
+      md: '📝', txt: '📄',
       jpg: '🖼️', png: '🖼️', gif: '🖼️', svg: '🖼️',
       sh: '💻', bash: '💻', zsh: '💻',
       lock: '🔒', env: '🔐',
@@ -228,9 +228,8 @@ const FileTreeItem = ({ item, level = 0, vulnerabilitiesByFile = {}, onFileClick
   return (
     <div>
       <div
-        className={`flex items-center gap-2 py-1.5 px-2 rounded hover:bg-muted/50 cursor-pointer transition-colors ${
-          vulnCount > 0 ? 'bg-red-500/5' : ''
-        }`}
+        className={`flex items-center gap-2 py-1.5 px-2 rounded hover:bg-muted/50 cursor-pointer transition-colors ${vulnCount > 0 ? 'bg-red-500/5' : ''
+          }`}
         style={{ paddingLeft: `${level * 16 + 8}px` }}
         onClick={handleClick}
       >
@@ -266,7 +265,7 @@ const FileTreeItem = ({ item, level = 0, vulnerabilitiesByFile = {}, onFileClick
           </span>
         )}
       </div>
-      
+
       <AnimatePresence>
         {isFolder && expanded && hasChildren && (
           <motion.div
@@ -276,10 +275,10 @@ const FileTreeItem = ({ item, level = 0, vulnerabilitiesByFile = {}, onFileClick
             transition={{ duration: 0.15 }}
           >
             {item.children.map((child, idx) => (
-              <FileTreeItem 
-                key={child.path || idx} 
-                item={child} 
-                level={level + 1} 
+              <FileTreeItem
+                key={child.path || idx}
+                item={child}
+                level={level + 1}
                 vulnerabilitiesByFile={vulnerabilitiesByFile}
                 onFileClick={onFileClick}
               />
@@ -294,15 +293,15 @@ const FileTreeItem = ({ item, level = 0, vulnerabilitiesByFile = {}, onFileClick
 // Build tree structure from flat file list
 const buildFileTree = (files) => {
   const root = { children: [] };
-  
+
   files.forEach(file => {
     const parts = file.path.split('/');
     let current = root;
-    
+
     parts.forEach((part, index) => {
       const isLast = index === parts.length - 1;
       let child = current.children.find(c => c.name === part);
-      
+
       if (!child) {
         child = {
           name: part,
@@ -313,11 +312,11 @@ const buildFileTree = (files) => {
         };
         current.children.push(child);
       }
-      
+
       current = child;
     });
   });
-  
+
   // Sort: folders first, then files, alphabetically
   const sortChildren = (node) => {
     if (node.children) {
@@ -329,7 +328,7 @@ const buildFileTree = (files) => {
       node.children.forEach(sortChildren);
     }
   };
-  
+
   sortChildren(root);
   return root.children;
 };
@@ -339,14 +338,14 @@ const RepositoryDetail = () => {
   const [repo, setRepo] = useState(null);
   const [vulnerabilities, setVulnerabilities] = useState([]);
   const [loading, setLoading] = useState(true);
-  
+
   // Branch & File Tree state
   const [branches, setBranches] = useState([]);
   const [selectedBranch, setSelectedBranch] = useState('');
   const [defaultBranch, setDefaultBranch] = useState('main');
   const [fileTree, setFileTree] = useState([]);
   const [loadingTree, setLoadingTree] = useState(false);
-  
+
   // Scanning state
   const [scanning, setScanning] = useState(false);
   const [scanProgress, setScanProgress] = useState(0);
@@ -358,7 +357,7 @@ const RepositoryDetail = () => {
   const [selectedCommit, setSelectedCommit] = useState('');
   const [estimatedTimeRemaining, setEstimatedTimeRemaining] = useState(null);
   const [activeScanId, setActiveScanId] = useState('');
-  
+
   // State for file-based vulnerability viewer
   const [selectedFileVulns, setSelectedFileVulns] = useState(null);
   const [selectedFilePath, setSelectedFilePath] = useState('');
@@ -371,7 +370,7 @@ const RepositoryDetail = () => {
   const [debugError, setDebugError] = useState(null);
   const [copiedSection, setCopiedSection] = useState(null);
   const [debugInnerTab, setDebugInnerTab] = useState('wrapper');
-  
+
   const fetchScanDebug = useCallback(async (preferredDebugId = null) => {
     if (!id) return;
     setLoadingDebug(true);
@@ -506,13 +505,13 @@ const RepositoryDetail = () => {
         };
       });
   }, [normalizedVulnerabilities]);
-  
+
   // Handle file click in tree to show vulnerabilities
   const handleFileVulnClick = useCallback((filePath, vulns) => {
     setSelectedFilePath(filePath);
     setSelectedFileVulns(vulns);
   }, []);
-  
+
   // Define fetchData first so it can be referenced by handleWebSocketMessage
   const fetchData = useCallback(async (restoreRunningScan = false) => {
     try {
@@ -522,14 +521,14 @@ const RepositoryDetail = () => {
         api.getRepoBranches(id).catch(() => ({ branches: [], default_branch: 'main' })),
         api.getRepoScans(id).catch(() => [])
       ]);
-      
+
       setRepo(repoData);
       setVulnerabilities(vulnData);
       setBranches(branchData.branches || []);
       setDefaultBranch(branchData.default_branch || 'main');
       setSelectedBranch(branchData.default_branch || 'main');
       setScans(scanData);
-      
+
       // Only restore running scan on initial load, not after scan completion
       if (restoreRunningScan) {
         const runningScan = scanData.find(s => s.status === 'running' || s.status === 'pending');
@@ -549,7 +548,7 @@ const RepositoryDetail = () => {
       setLoading(false);
     }
   }, [id]);
-  
+
   // WebSocket ref for scan-specific connections
   const scanWsRef = useRef(null);
   const pingIntervalRef = useRef(null);
@@ -581,27 +580,27 @@ const RepositoryDetail = () => {
       }
     }, 2000);
   }, [fetchData]);
-  
+
   // Function to connect WebSocket for a specific scan
   const connectScanWebSocket = useCallback((scanId) => {
     const token = getCookie('auth_token');
     if (!token || !scanId) return;
-    
+
     const backendUrl = process.env.REACT_APP_BACKEND_URL || 'http://localhost:8000';
     const wsProtocol = backendUrl.startsWith('https') ? 'wss' : 'ws';
     const wsHost = backendUrl.replace(/^https?:\/\//, '');
     const wsUrl = `${wsProtocol}://${wsHost}/ws/notifications?token=${token}&scan_id=${scanId}`;
-    
+
     console.log(`Opening WebSocket for scan ${scanId}`);
-    
+
     // Close any existing connection
     if (scanWsRef.current) {
       scanWsRef.current.close();
     }
-    
+
     const ws = new WebSocket(wsUrl);
     scanWsRef.current = ws;
-    
+
     ws.onopen = () => {
       console.log(`WebSocket connected for scan ${scanId}`);
       // Start ping interval
@@ -611,20 +610,20 @@ const RepositoryDetail = () => {
         }
       }, 30000);
     };
-    
+
     ws.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data);
-        
+
         if (data.type === 'pong' || data.type === 'connected') return;
-        
+
         // Wrapper Hunter completed
         if (data.type === 'wrapper_hunter_complete') {
           console.log('Wrapper hunter completed:', data.message);
           setScanProgress(30);
           setScanStage('Wrapper analysis done');
         }
-        
+
         // LLM analysis started
         if (data.type === 'llm_analysis_started') {
           console.log('LLM analysis started:', data.message);
@@ -654,7 +653,7 @@ const RepositoryDetail = () => {
             setScanStage(stageMsg);
           }
         }
-        
+
         // LLM analysis completed
         if (data.type === 'llm_analysis_complete') {
           console.log('LLM analysis complete:', data.message);
@@ -666,19 +665,19 @@ const RepositoryDetail = () => {
           }
           setScanStage(stageMsg);
         }
-        
+
         // Semgrep scan started
         if (data.type === 'semgrep_started') {
           console.log('Semgrep scan started:', data.message);
           setScanProgress(55);
           setScanStage('Semgrep scanning...');
         }
-        
+
         // Scan complete (final)
         if (data.type === 'scan_complete') {
           const notification = data.notification || {};
           const notificationData = notification.data || {};
-          
+
           // Check if this notification is for our current scan
           if (
             notificationData.repository_id === id ||
@@ -693,7 +692,7 @@ const RepositoryDetail = () => {
         console.error('WebSocket: Failed to parse message', error);
       }
     };
-    
+
     ws.onclose = (event) => {
       console.log(`WebSocket closed for scan ${scanId}:`, event.code, event.reason);
       if (pingIntervalRef.current) {
@@ -702,7 +701,7 @@ const RepositoryDetail = () => {
       }
       scanWsRef.current = null;
     };
-    
+
     ws.onerror = (error) => {
       console.error(`WebSocket error for scan ${scanId}:`, error);
     };
@@ -744,7 +743,7 @@ const RepositoryDetail = () => {
 
     return () => clearInterval(interval);
   }, [scanning, activeScanId, id, finalizeScanCompletion, fetchData]);
-  
+
   // Cleanup WebSocket on unmount
   useEffect(() => {
     return () => {
@@ -756,10 +755,10 @@ const RepositoryDetail = () => {
       }
     };
   }, []);
-  
+
   // DON'T auto-connect WebSocket based on currentScanId
   // WebSocket is ONLY created when user explicitly starts a scan (in executeScan)
-  
+
   // Define fetchFileTree and fetchCommits before they're used in useEffect
   const fetchFileTree = useCallback(async (branch) => {
     setLoadingTree(true);
@@ -774,7 +773,7 @@ const RepositoryDetail = () => {
       setLoadingTree(false);
     }
   }, [id]);
-  
+
   const fetchCommits = useCallback(async (branch) => {
     try {
       const data = await api.getRepoCommits(id, branch, 20);
@@ -787,7 +786,7 @@ const RepositoryDetail = () => {
   useEffect(() => {
     fetchData(true); // Restore running scan on initial load
   }, [id, fetchData]);
-  
+
   useEffect(() => {
     if (selectedBranch) {
       fetchFileTree(selectedBranch);
@@ -798,7 +797,7 @@ const RepositoryDetail = () => {
   const handleStartScan = async () => {
     // Check if this is first scan or rescan
     const hasScannedBefore = scans.length > 0;
-    
+
     if (hasScannedBefore) {
       setShowScanDialog(true);
     } else {
@@ -806,29 +805,29 @@ const RepositoryDetail = () => {
       executeScan('full');
     }
   };
-  
+
   const executeScan = async (mode) => {
     setShowScanDialog(false);
     setScanning(true);
     setScanProgress(10);
     setScanStage('Starting wrapper hunter...');
     setEstimatedTimeRemaining(null);
-    
+
     try {
       const baseCommit = mode === 'diff' && selectedCommit ? selectedCommit : null;
-      
+
       const result = await api.startGitHubScan(id, mode, selectedBranch, baseCommit);
-      
+
       if (result.success) {
         completionHandledRef.current = false;
         setActiveScanId(result.scan_id || '');
         toast.success('Scan pipeline started!');
         setScanProgress(15);
         setScanStage('Wrapper hunter running...');
-        
+
         // Connect WebSocket immediately for this scan
         connectScanWebSocket(result.scan_id);
-        
+
         // Add to scans list
         setScans(prev => [{
           id: result.scan_id,
@@ -857,7 +856,7 @@ const RepositoryDetail = () => {
     };
     return colors[severity] || 'default';
   };
-  
+
   const getScanStatusBadge = (status) => {
     const variants = {
       completed: { variant: 'default', icon: CheckCircle, color: 'text-green-500' },
@@ -865,10 +864,10 @@ const RepositoryDetail = () => {
       pending: { variant: 'outline', icon: Clock, color: 'text-yellow-500' },
       failed: { variant: 'destructive', icon: AlertTriangle, color: 'text-red-500' }
     };
-    
+
     const config = variants[status] || variants.pending;
     const Icon = config.icon;
-    
+
     return (
       <Badge variant={config.variant} className="gap-1">
         <Icon className={`w-3 h-3 ${config.color} ${status === 'running' ? 'animate-spin' : ''}`} />
@@ -901,24 +900,32 @@ const RepositoryDetail = () => {
               <h1 className="text-4xl font-bold mb-2">{repo?.name}</h1>
               <p className="text-muted-foreground text-lg">{repo?.full_name}</p>
             </div>
-            <Button
-              onClick={handleStartScan}
-              disabled={scanning}
-              className="bg-primary hover:bg-primary/90"
-              data-testid="start-scan-button"
-            >
-              {scanning ? (
-                <>
-                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                  Scanning...
-                </>
-              ) : (
-                <>
-                  <Scan className="w-4 h-4 mr-2" />
-                  Start Scan
-                </>
-              )}
-            </Button>
+            <div className="flex items-center gap-3">
+              <Link to={`/repositories/${id}/demo-visualizer`}>
+                <Button variant="outline" className="gap-2 border-border/50 text-foreground hover:text-primary">
+                  <Eye className="w-4 h-4" />
+                  Visualize
+                </Button>
+              </Link>
+              <Button
+                onClick={handleStartScan}
+                disabled={scanning}
+                className="bg-primary hover:bg-primary/90"
+                data-testid="start-scan-button"
+              >
+                {scanning ? (
+                  <>
+                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                    Scanning...
+                  </>
+                ) : (
+                  <>
+                    <Scan className="w-4 h-4 mr-2" />
+                    Start Scan
+                  </>
+                )}
+              </Button>
+            </div>
           </div>
         </div>
 
@@ -973,11 +980,11 @@ const RepositoryDetail = () => {
                         )}
                       </div>
                     </div>
-                    
+
                     <div className="space-y-2">
                       <Progress value={scanProgress} className="h-3" />
                     </div>
-                    
+
                     <motion.div
                       initial={{ opacity: 0, y: 10 }}
                       animate={{ opacity: 1, y: 0 }}
@@ -1058,7 +1065,7 @@ const RepositoryDetail = () => {
               </Select>
             </CardContent>
           </Card>
-          
+
           {/* Stats */}
           <Card data-testid="risk-score-stat">
             <CardContent className="pt-6">
@@ -1074,7 +1081,7 @@ const RepositoryDetail = () => {
           </Card>
           <Card data-testid="patterns-stat">
             <CardContent className="pt-6">
-              <div className="text-sm text-muted-foreground mb-2">AI Debug Runs</div>
+              <div className="text-sm text-muted-foreground mb-2">Debug Runs</div>
               <div className="text-3xl font-bold text-primary">{scanDebug ? (scanDebug.vuln_wrapper_count ?? 0) : '—'}</div>
             </CardContent>
           </Card>
@@ -1097,7 +1104,7 @@ const RepositoryDetail = () => {
             </TabsTrigger>
             <TabsTrigger value="ai-patterns" data-testid="tab-patterns">
               <Bot className="w-4 h-4 mr-2" />
-              AI Debug
+              Debug
             </TabsTrigger>
           </TabsList>
 
@@ -1127,8 +1134,8 @@ const RepositoryDetail = () => {
                   <ScrollArea className="h-[500px]">
                     <div className="pr-4">
                       {fileTree.map((item, idx) => (
-                        <FileTreeItem 
-                          key={item.path || idx} 
+                        <FileTreeItem
+                          key={item.path || idx}
                           item={item}
                           vulnerabilitiesByFile={vulnerabilitiesByFile}
                           onFileClick={handleFileVulnClick}
@@ -1180,111 +1187,111 @@ const RepositoryDetail = () => {
 
                           <div className="space-y-3">
                             {group.items.map((vuln, index) => (
-                          <motion.div
-                            key={vuln.id || `${fileGroup.filePath}-${group.category}-${index}`}
-                            initial={{ opacity: 0, y: 10 }}
-                            animate={{ opacity: 1, y: 0 }}
-                            transition={{ delay: (fileIndex * 0.02) + (groupIndex * 0.02) + (index * 0.01) }}
-                          >
-                            <Card className="hover:border-primary/30 transition-all" data-testid={`vuln-${fileIndex}-${groupIndex}-${index}`}>
-                              <CardHeader>
-                                <div className="flex items-start justify-between gap-3">
-                                  <div>
-                                    <CardTitle className="text-lg">{vuln.title}</CardTitle>
-                                    <CardDescription>
-                                      {vuln.file_path || 'unknown-file'}{vuln.line_number ? `:${vuln.line_number}` : ''}
-                                    </CardDescription>
-                                  </div>
-                                  <div className="flex items-center gap-2">
-                                    <Badge variant="outline">{vuln.type || 'Security Misconfiguration'}</Badge>
-                                    <Badge variant={getSeverityColor(vuln.severity)}>
-                                      {(vuln.severity || 'medium').toUpperCase()}
-                                    </Badge>
-                                  </div>
-                                </div>
-                              </CardHeader>
-                              <CardContent>
-                                <div className="mb-3 rounded-md border border-border/60 bg-background px-3 py-3">
-                                  <ReactMarkdown components={MARKDOWN_COMPONENTS}>
-                                    {vuln.description}
-                                  </ReactMarkdown>
-                                </div>
-                                {vuln.reason && vuln.reason !== vuln.description && (
-                                  <p className="text-xs text-muted-foreground mb-3">AI Analysis: {vuln.reason}</p>
-                                )}
-
-                                <div className="mb-3 rounded-md border border-border/70 bg-background px-3 py-3">
-                                  <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-1">Affected Line</p>
-                                  {vuln.affected_line_link ? (
-                                    <a
-                                      href={vuln.affected_line_link}
-                                      target="_blank"
-                                      rel="noreferrer"
-                                      className="text-sm text-foreground underline decoration-foreground/40 hover:text-primary"
-                                    >
-                                      {vuln.file_path || 'unknown-file'}{vuln.line_number ? `:${vuln.line_number}` : ''}
-                                    </a>
-                                  ) : (
-                                    <p className="text-sm text-foreground">{vuln.file_path || 'unknown-file'}{vuln.line_number ? `:${vuln.line_number}` : ''}</p>
-                                  )}
-                                  {Array.isArray(vuln.all_affected_lines) && vuln.all_affected_lines.length > 0 && (
-                                    <p className="text-xs text-muted-foreground mt-2">
-                                      Exact Affected Lines: [ {vuln.all_affected_lines.join(', ')} ]
-                                    </p>
-                                  )}
-                                </div>
-
-                                {vuln.code_snippet && (
-                                  <pre className="bg-slate-950 border border-slate-700 p-4 rounded-md text-xs font-mono overflow-x-auto mb-3 text-slate-100">
-                                    <code>{vuln.code_snippet}</code>
-                                  </pre>
-                                )}
-
-                                {(vuln.vulnerable_parameter || vuln.malicious_payload || vuln.exploit_injected_example || vuln.exploit_explanation || vuln.impact_summary) && (
-                                  <div className="space-y-3 mb-3">
-                                    <div className="rounded-md border border-border/70 bg-background px-3 py-3">
-                                      <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-1">Vulnerable Parameter</p>
-                                      <p className="text-sm text-foreground">{vuln.vulnerable_parameter || 'user_input'}</p>
+                              <motion.div
+                                key={vuln.id || `${fileGroup.filePath}-${group.category}-${index}`}
+                                initial={{ opacity: 0, y: 10 }}
+                                animate={{ opacity: 1, y: 0 }}
+                                transition={{ delay: (fileIndex * 0.02) + (groupIndex * 0.02) + (index * 0.01) }}
+                              >
+                                <Card className="hover:border-primary/30 transition-all" data-testid={`vuln-${fileIndex}-${groupIndex}-${index}`}>
+                                  <CardHeader>
+                                    <div className="flex items-start justify-between gap-3">
+                                      <div>
+                                        <CardTitle className="text-lg">{vuln.title}</CardTitle>
+                                        <CardDescription>
+                                          {vuln.file_path || 'unknown-file'}{vuln.line_number ? `:${vuln.line_number}` : ''}
+                                        </CardDescription>
+                                      </div>
+                                      <div className="flex items-center gap-2">
+                                        <Badge variant="outline">{vuln.type || 'Security Misconfiguration'}</Badge>
+                                        <Badge variant={getSeverityColor(vuln.severity)}>
+                                          {(vuln.severity || 'medium').toUpperCase()}
+                                        </Badge>
+                                      </div>
                                     </div>
-
-                                    <div className="rounded-md border border-border/70 bg-background px-3 py-3">
-                                      <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-1">Malicious Payload (raw)</p>
-                                      <pre className="bg-slate-950 border border-slate-700 p-3 rounded-md text-xs font-mono whitespace-pre-wrap break-words text-slate-100">{vuln.malicious_payload || '<attacker_payload>'}</pre>
+                                  </CardHeader>
+                                  <CardContent>
+                                    <div className="mb-3 rounded-md border border-border/60 bg-background px-3 py-3">
+                                      <ReactMarkdown components={MARKDOWN_COMPONENTS}>
+                                        {vuln.description}
+                                      </ReactMarkdown>
                                     </div>
-
-                                    <div className="rounded-md border border-border/70 bg-background px-3 py-3">
-                                      <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-1">Payload Inserted In Function</p>
-                                      <pre className="bg-slate-950 border border-slate-700 p-3 rounded-md text-xs font-mono whitespace-pre-wrap break-words text-slate-100">{vuln.exploit_injected_example}</pre>
-                                    </div>
-
-                                    <div className="rounded-md border border-border/70 bg-background px-3 py-3">
-                                      <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-1">How Payload Flows</p>
-                                      <p className="text-sm text-foreground">{vuln.exploit_explanation || vuln.reason}</p>
-                                    </div>
-
-                                    <div className="rounded-md border border-border/70 bg-background px-3 py-3">
-                                      <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-1">Data Loss / Leak Impact</p>
-                                      <p className="text-sm text-foreground">{vuln.impact_summary}</p>
-                                    </div>
-                                  </div>
-                                )}
-
-                                {vuln.ai_reasoning && (
-                                  <div className="bg-primary/10 border border-primary/20 p-3 rounded-md">
-                                    <p className="text-sm">
-                                      <span className="font-semibold text-primary">AI Analysis: </span>
-                                      {vuln.ai_reasoning}
-                                    </p>
-                                    {typeof vuln.ai_confidence === 'number' && (
-                                      <p className="text-xs text-muted-foreground mt-1">
-                                        Confidence: {(vuln.ai_confidence * 100).toFixed(0)}%
-                                      </p>
+                                    {vuln.reason && vuln.reason !== vuln.description && (
+                                      <p className="text-xs text-muted-foreground mb-3">AI Analysis: {vuln.reason}</p>
                                     )}
-                                  </div>
-                                )}
-                              </CardContent>
-                            </Card>
-                          </motion.div>
+
+                                    <div className="mb-3 rounded-md border border-border/70 bg-background px-3 py-3">
+                                      <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-1">Affected Line</p>
+                                      {vuln.affected_line_link ? (
+                                        <a
+                                          href={vuln.affected_line_link}
+                                          target="_blank"
+                                          rel="noreferrer"
+                                          className="text-sm text-foreground underline decoration-foreground/40 hover:text-primary"
+                                        >
+                                          {vuln.file_path || 'unknown-file'}{vuln.line_number ? `:${vuln.line_number}` : ''}
+                                        </a>
+                                      ) : (
+                                        <p className="text-sm text-foreground">{vuln.file_path || 'unknown-file'}{vuln.line_number ? `:${vuln.line_number}` : ''}</p>
+                                      )}
+                                      {Array.isArray(vuln.all_affected_lines) && vuln.all_affected_lines.length > 0 && (
+                                        <p className="text-xs text-muted-foreground mt-2">
+                                          Exact Affected Lines: [ {vuln.all_affected_lines.join(', ')} ]
+                                        </p>
+                                      )}
+                                    </div>
+
+                                    {vuln.code_snippet && (
+                                      <pre className="bg-slate-950 border border-slate-700 p-4 rounded-md text-xs font-mono overflow-x-auto mb-3 text-slate-100">
+                                        <code>{vuln.code_snippet}</code>
+                                      </pre>
+                                    )}
+
+                                    {(vuln.vulnerable_parameter || vuln.malicious_payload || vuln.exploit_injected_example || vuln.exploit_explanation || vuln.impact_summary) && (
+                                      <div className="space-y-3 mb-3">
+                                        <div className="rounded-md border border-border/70 bg-background px-3 py-3">
+                                          <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-1">Vulnerable Parameter</p>
+                                          <p className="text-sm text-foreground">{vuln.vulnerable_parameter || 'user_input'}</p>
+                                        </div>
+
+                                        <div className="rounded-md border border-border/70 bg-background px-3 py-3">
+                                          <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-1">Malicious Payload (raw)</p>
+                                          <pre className="bg-slate-950 border border-slate-700 p-3 rounded-md text-xs font-mono whitespace-pre-wrap break-words text-slate-100">{vuln.malicious_payload || '<attacker_payload>'}</pre>
+                                        </div>
+
+                                        <div className="rounded-md border border-border/70 bg-background px-3 py-3">
+                                          <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-1">Payload Inserted In Function</p>
+                                          <pre className="bg-slate-950 border border-slate-700 p-3 rounded-md text-xs font-mono whitespace-pre-wrap break-words text-slate-100">{vuln.exploit_injected_example}</pre>
+                                        </div>
+
+                                        <div className="rounded-md border border-border/70 bg-background px-3 py-3">
+                                          <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-1">How Payload Flows</p>
+                                          <p className="text-sm text-foreground">{vuln.exploit_explanation || vuln.reason}</p>
+                                        </div>
+
+                                        <div className="rounded-md border border-border/70 bg-background px-3 py-3">
+                                          <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-1">Data Loss / Leak Impact</p>
+                                          <p className="text-sm text-foreground">{vuln.impact_summary}</p>
+                                        </div>
+                                      </div>
+                                    )}
+
+                                    {vuln.ai_reasoning && (
+                                      <div className="bg-primary/10 border border-primary/20 p-3 rounded-md">
+                                        <p className="text-sm">
+                                          <span className="font-semibold text-primary">AI Analysis: </span>
+                                          {vuln.ai_reasoning}
+                                        </p>
+                                        {typeof vuln.ai_confidence === 'number' && (
+                                          <p className="text-xs text-muted-foreground mt-1">
+                                            Confidence: {(vuln.ai_confidence * 100).toFixed(0)}%
+                                          </p>
+                                        )}
+                                      </div>
+                                    )}
+                                  </CardContent>
+                                </Card>
+                              </motion.div>
                             ))}
                           </div>
                         </div>
@@ -1375,6 +1382,8 @@ const RepositoryDetail = () => {
             )}
           </TabsContent>
 
+
+
           {/* AI Debug Tab */}
           <TabsContent value="ai-patterns">
             <div className="space-y-4">
@@ -1383,7 +1392,7 @@ const RepositoryDetail = () => {
                 <div>
                   <h2 className="text-xl font-semibold flex items-center gap-2">
                     <Bot className="w-5 h-5 text-primary" />
-                    AI Pipeline Debug
+                    Pipeline Debug
                   </h2>
                   <p className="text-sm text-muted-foreground mt-1">
                     Full trace of Wrapper Hunter → Groq LLM → Semgrep rules (scan-wise)
@@ -1436,7 +1445,7 @@ const RepositoryDetail = () => {
 
               {/* Data loaded */}
               {!loadingDebug && scanDebug && (() => {
-                const wd   = scanDebug.wrapper_hunter_results;
+                const wd = scanDebug.wrapper_hunter_results;
                 const llmR = scanDebug.llm_result;
                 const yaml = scanDebug.custom_rules_yaml;
                 const prompt = scanDebug.llm_prompt;
@@ -1448,10 +1457,10 @@ const RepositoryDetail = () => {
                 );
 
                 const severityColor = (s) => ({
-                  HIGH:     'bg-red-500/15 text-red-400 border-red-500/30',
+                  HIGH: 'bg-red-500/15 text-red-400 border-red-500/30',
                   CRITICAL: 'bg-red-600/20 text-red-300 border-red-600/30',
-                  MEDIUM:   'bg-yellow-500/15 text-yellow-400 border-yellow-500/30',
-                  LOW:      'bg-blue-500/15 text-blue-400 border-blue-500/30',
+                  MEDIUM: 'bg-yellow-500/15 text-yellow-400 border-yellow-500/30',
+                  LOW: 'bg-blue-500/15 text-blue-400 border-blue-500/30',
                 })[s?.toUpperCase()] || 'bg-muted text-muted-foreground';
 
                 return (
@@ -1472,17 +1481,16 @@ const RepositoryDetail = () => {
                       {[
                         { key: 'wrapper', label: 'Wrapper Hunter', icon: Terminal },
                         ...(hasDetailedPrompt ? [{ key: 'prompt', label: 'LLM Prompt', icon: Code2 }] : []),
-                        { key: 'llm',     label: 'LLM Result',     icon: Cpu },
-                        { key: 'rules',   label: 'Semgrep Rules',  icon: Zap },
+                        { key: 'llm', label: 'LLM Result', icon: Cpu },
+                        { key: 'rules', label: 'Semgrep Rules', icon: Zap },
                       ].map(({ key, label, icon: Icon }) => (
                         <button
                           key={key}
                           onClick={() => setDebugInnerTab(key)}
-                          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium border transition-colors ${
-                            debugInnerTab === key
+                          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium border transition-colors ${debugInnerTab === key
                               ? 'bg-primary text-primary-foreground border-primary'
                               : 'bg-muted/40 text-muted-foreground border-border hover:bg-muted'
-                          }`}
+                            }`}
                         >
                           <Icon className="w-3.5 h-3.5" />{label}
                         </button>
@@ -1525,64 +1533,64 @@ const RepositoryDetail = () => {
                             )}
 
                             {Object.entries(wd.results || {}).map(([lang, section]) => (
-                            <div key={lang} className="space-y-3">
-                              <h3 className="font-semibold text-base flex items-center gap-2">
-                                <Terminal className="w-4 h-4 text-primary" />
-                                {lang === 'python' ? '🐍 Python' : '⚛️ React / JS'} — {wd.language}
-                              </h3>
+                              <div key={lang} className="space-y-3">
+                                <h3 className="font-semibold text-base flex items-center gap-2">
+                                  <Terminal className="w-4 h-4 text-primary" />
+                                  {lang === 'python' ? '🐍 Python' : '⚛️ React / JS'} — {wd.language}
+                                </h3>
 
-                              {/* Modules */}
-                              <Card className="border-border/60">
-                                <CardHeader className="pb-2 pt-4">
-                                  <CardTitle className="text-sm flex items-center gap-2"><Database className="w-3.5 h-3.5" /> Modules Discovered</CardTitle>
-                                </CardHeader>
-                                <CardContent className="space-y-3">
-                                  <div>
-                                    <p className="text-xs text-muted-foreground font-medium mb-1">From manifest ({(section.modules?.from_manifest || []).length})</p>
-                                    <div className="flex flex-wrap gap-1.5">
-                                      {(section.modules?.from_manifest || []).map(m => <span key={m} className="px-2 py-0.5 bg-muted rounded text-xs font-mono">{m}</span>)}
-                                      {!section.modules?.from_manifest?.length && <span className="text-xs text-muted-foreground italic">none</span>}
+                                {/* Modules */}
+                                <Card className="border-border/60">
+                                  <CardHeader className="pb-2 pt-4">
+                                    <CardTitle className="text-sm flex items-center gap-2"><Database className="w-3.5 h-3.5" /> Modules Discovered</CardTitle>
+                                  </CardHeader>
+                                  <CardContent className="space-y-3">
+                                    <div>
+                                      <p className="text-xs text-muted-foreground font-medium mb-1">From manifest ({(section.modules?.from_manifest || []).length})</p>
+                                      <div className="flex flex-wrap gap-1.5">
+                                        {(section.modules?.from_manifest || []).map(m => <span key={m} className="px-2 py-0.5 bg-muted rounded text-xs font-mono">{m}</span>)}
+                                        {!section.modules?.from_manifest?.length && <span className="text-xs text-muted-foreground italic">none</span>}
+                                      </div>
                                     </div>
-                                  </div>
-                                  <div>
-                                    <p className="text-xs text-muted-foreground font-medium mb-1">From imports ({(section.modules?.from_imports || []).length})</p>
-                                    <div className="flex flex-wrap gap-1.5 max-h-24 overflow-y-auto">
-                                      {(section.modules?.from_imports || []).map(m => <span key={m} className="px-2 py-0.5 bg-muted rounded text-xs font-mono">{m}</span>)}
-                                      {!section.modules?.from_imports?.length && <span className="text-xs text-muted-foreground italic">none</span>}
+                                    <div>
+                                      <p className="text-xs text-muted-foreground font-medium mb-1">From imports ({(section.modules?.from_imports || []).length})</p>
+                                      <div className="flex flex-wrap gap-1.5 max-h-24 overflow-y-auto">
+                                        {(section.modules?.from_imports || []).map(m => <span key={m} className="px-2 py-0.5 bg-muted rounded text-xs font-mono">{m}</span>)}
+                                        {!section.modules?.from_imports?.length && <span className="text-xs text-muted-foreground italic">none</span>}
+                                      </div>
                                     </div>
-                                  </div>
-                                </CardContent>
-                              </Card>
+                                  </CardContent>
+                                </Card>
 
-                              {/* Wrapper functions */}
-                              <Card className="border-border/60">
-                                <CardHeader className="pb-2 pt-4">
-                                  <CardTitle className="text-sm">Wrapper Functions Found ({(section.wrapper_functions || []).length})</CardTitle>
-                                </CardHeader>
-                                <CardContent>
-                                  {!(section.wrapper_functions || []).length ? (
-                                    <p className="text-sm text-muted-foreground italic">No wrapper functions found.</p>
-                                  ) : (
-                                    <div className="space-y-3">
-                                      {section.wrapper_functions.map((fn, i) => (
-                                        <div key={i} className="border border-border/50 rounded-lg p-3 space-y-2">
-                                          <div className="flex items-center justify-between flex-wrap gap-2">
-                                            <code className="font-mono font-semibold text-sm text-foreground">{fn.function_name}()</code>
-                                            <span className="text-xs text-muted-foreground font-mono">{fn.file} L{fn.line_start}–{fn.line_end}</span>
+                                {/* Wrapper functions */}
+                                <Card className="border-border/60">
+                                  <CardHeader className="pb-2 pt-4">
+                                    <CardTitle className="text-sm">Wrapper Functions Found ({(section.wrapper_functions || []).length})</CardTitle>
+                                  </CardHeader>
+                                  <CardContent>
+                                    {!(section.wrapper_functions || []).length ? (
+                                      <p className="text-sm text-muted-foreground italic">No wrapper functions found.</p>
+                                    ) : (
+                                      <div className="space-y-3">
+                                        {section.wrapper_functions.map((fn, i) => (
+                                          <div key={i} className="border border-border/50 rounded-lg p-3 space-y-2">
+                                            <div className="flex items-center justify-between flex-wrap gap-2">
+                                              <code className="font-mono font-semibold text-sm text-foreground">{fn.function_name}()</code>
+                                              <span className="text-xs text-muted-foreground font-mono">{fn.file} L{fn.line_start}–{fn.line_end}</span>
+                                            </div>
+                                            <div className="flex flex-wrap gap-1.5">
+                                              {(fn.calls || []).map(c => <span key={c} className="px-1.5 py-0.5 bg-orange-500/15 border border-orange-500/25 text-orange-400 rounded text-xs font-mono">{c}</span>)}
+                                            </div>
+                                            {fn.source_code && (
+                                              <pre className="text-xs font-mono bg-muted/60 rounded p-3 overflow-x-auto max-h-48 whitespace-pre-wrap border border-border/40">{fn.source_code}</pre>
+                                            )}
                                           </div>
-                                          <div className="flex flex-wrap gap-1.5">
-                                            {(fn.calls || []).map(c => <span key={c} className="px-1.5 py-0.5 bg-orange-500/15 border border-orange-500/25 text-orange-400 rounded text-xs font-mono">{c}</span>)}
-                                          </div>
-                                          {fn.source_code && (
-                                            <pre className="text-xs font-mono bg-muted/60 rounded p-3 overflow-x-auto max-h-48 whitespace-pre-wrap border border-border/40">{fn.source_code}</pre>
-                                          )}
-                                        </div>
-                                      ))}
-                                    </div>
-                                  )}
-                                </CardContent>
-                              </Card>
-                            </div>
+                                        ))}
+                                      </div>
+                                    )}
+                                  </CardContent>
+                                </Card>
+                              </div>
                             ))}
                           </>
                         )}
@@ -1778,18 +1786,16 @@ const RepositoryDetail = () => {
               Choose how you want to scan this repository
             </DialogDescription>
           </DialogHeader>
-          
+
           <div className="space-y-4 py-4">
-            <div 
-              className={`p-4 rounded-lg border-2 cursor-pointer transition-colors ${
-                scanMode === 'full' ? 'border-primary bg-primary/5' : 'border-border hover:border-muted-foreground'
-              }`}
+            <div
+              className={`p-4 rounded-lg border-2 cursor-pointer transition-colors ${scanMode === 'full' ? 'border-primary bg-primary/5' : 'border-border hover:border-muted-foreground'
+                }`}
               onClick={() => setScanMode('full')}
             >
               <div className="flex items-center gap-3">
-                <div className={`w-4 h-4 rounded-full border-2 ${
-                  scanMode === 'full' ? 'border-primary bg-primary' : 'border-muted-foreground'
-                }`}>
+                <div className={`w-4 h-4 rounded-full border-2 ${scanMode === 'full' ? 'border-primary bg-primary' : 'border-muted-foreground'
+                  }`}>
                   {scanMode === 'full' && <div className="w-2 h-2 bg-white rounded-full m-auto mt-0.5" />}
                 </div>
                 <div>
@@ -1800,17 +1806,15 @@ const RepositoryDetail = () => {
                 </div>
               </div>
             </div>
-            
-            <div 
-              className={`p-4 rounded-lg border-2 cursor-pointer transition-colors ${
-                scanMode === 'diff' ? 'border-primary bg-primary/5' : 'border-border hover:border-muted-foreground'
-              }`}
+
+            <div
+              className={`p-4 rounded-lg border-2 cursor-pointer transition-colors ${scanMode === 'diff' ? 'border-primary bg-primary/5' : 'border-border hover:border-muted-foreground'
+                }`}
               onClick={() => setScanMode('diff')}
             >
               <div className="flex items-center gap-3">
-                <div className={`w-4 h-4 rounded-full border-2 ${
-                  scanMode === 'diff' ? 'border-primary bg-primary' : 'border-muted-foreground'
-                }`}>
+                <div className={`w-4 h-4 rounded-full border-2 ${scanMode === 'diff' ? 'border-primary bg-primary' : 'border-muted-foreground'
+                  }`}>
                   {scanMode === 'diff' && <div className="w-2 h-2 bg-white rounded-full m-auto mt-0.5" />}
                 </div>
                 <div>
@@ -1821,7 +1825,7 @@ const RepositoryDetail = () => {
                 </div>
               </div>
             </div>
-            
+
             {scanMode === 'diff' && commits.length > 0 && (
               <div className="pl-7">
                 <label className="text-sm font-medium mb-2 block">
@@ -1846,7 +1850,7 @@ const RepositoryDetail = () => {
               </div>
             )}
           </div>
-          
+
           <DialogFooter>
             <Button variant="outline" onClick={() => setShowScanDialog(false)}>
               Cancel
@@ -1858,7 +1862,7 @@ const RepositoryDetail = () => {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-      
+
       {/* File Vulnerabilities Dialog */}
       <Dialog open={!!selectedFileVulns} onOpenChange={(open) => !open && setSelectedFileVulns(null)}>
         <DialogContent className="max-w-3xl max-h-[80vh] overflow-hidden flex flex-col">
@@ -1884,9 +1888,9 @@ const RepositoryDetail = () => {
                         </CardDescription>
                       </div>
                       <Badge variant={
-                        vuln.severity === 'critical' ? 'destructive' : 
-                        vuln.severity === 'high' ? 'destructive' :
-                        vuln.severity === 'medium' ? 'warning' : 'secondary'
+                        vuln.severity === 'critical' ? 'destructive' :
+                          vuln.severity === 'high' ? 'destructive' :
+                            vuln.severity === 'medium' ? 'warning' : 'secondary'
                       }>
                         {vuln.severity}
                       </Badge>

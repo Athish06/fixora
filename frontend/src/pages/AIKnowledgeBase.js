@@ -40,10 +40,7 @@ const AIKnowledgeBase = () => {
     <DashboardLayout>
       <div className="space-y-8" data-testid="ai-knowledge-base">
         <div>
-          <h1 className="text-4xl font-bold mb-2">AI Knowledge Base</h1>
-          <p className="text-muted-foreground text-lg">
-            Full pipeline debug data from Wrapper Hunter &rarr; LLM &rarr; Semgrep rules
-          </p>
+          <h1 className="text-4xl font-bold mb-2">Scan History</h1>
         </div>
 
         <div className="space-y-4">
@@ -84,6 +81,20 @@ const AIKnowledgeBase = () => {
                     </div>
                   </CardHeader>
                   <CardContent>
+                    <div className="grid grid-cols-2 md:grid-cols-5 gap-4 text-sm mb-4 pb-4 border-b border-border">
+                      <div className="flex items-center gap-2">
+                        <Layers className="w-4 h-4 text-primary" />
+                        <span className="text-muted-foreground">Total Scans:</span>
+                        <span className="font-semibold text-foreground">{record.total_scans ?? 0}</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <AlertTriangle className="w-4 h-4 text-destructive" />
+                        <span className="text-muted-foreground">Total Vulns:</span>
+                        <span className="font-semibold text-foreground">{record.total_vulnerabilities ?? 0}</span>
+                      </div>
+                    </div>
+
+                    <p className="text-xs text-muted-foreground font-medium mb-3 uppercase tracking-wider">Latest Scan Details</p>
                     <div className="grid grid-cols-3 gap-4 text-sm">
                       <div className="flex items-center gap-2">
                         <Shield className="w-4 h-4 text-yellow-500" />

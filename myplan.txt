@@ -1,0 +1,125 @@
+A. Remove the standalone demo-visualizer page
+Three files, all mechanical:
+
+src/App.js — drop import DemoVisualizer from './pages/DemoVisualizer' and the <Route path="/repositories/:id/demo-visualizer" .../> line.
+src/pages/RepositoryDetail.js — remove the header's <Link to=".../demo-visualizer">Visualize</Link> IIFE block next to the Start Scan button, and the "Presentation Mode" <Link> sitting inside the Visualizer tab's content (top-right of that panel). Keep everything else in that tab — the <ScanVisualizer scanId={...} repositoryId={id} /> render and the empty state stay exactly as-is.
+src/pages/DemoVisualizer.js — delete the file, it has no other referrer once the route is gone.
+
+B. Strip emojis, replace with the lucide icons you already use everywhere else
+
+StageRail.js — STAGE_ICONS (📦🌳🧠🔬⚡📊) → swap for Package, GitBranch, Brain, Cpu, Zap, BarChart3 from lucide-react (you already import several of these elsewhere in the visualizer components, so this is also a consistency fix, not just emoji removal).
+DiscoveryStage.js — '🐍 Python' / '⚛️ JavaScript / React' → plain 'Python' / 'JavaScript / React'.
+LLMPhase1Stage.js — same langLabel fix, and drop the 📋 clipboard emoji from the "Module List" icon box (use Package or ClipboardList icon instead, sized to match the existing Brain/AlertOctagon icons in that same component).
+RuleGenStage.js — moot once you remove the whole stage (next item), but if you keep any of its visuals elsewhere, the 🐛 goes too.
+
+C. Remove the Rule Generation stage from the stepper
+
+pipeline_trace_service.py — drop _build_rule_generation_stage(...) from the stages list inside build_trace(). Leave the function defined (harmless, cheap) or delete it — your call, doesn't matter functionally.
+ScanVisualizer.js — remove rule_generation: RuleGenStage from STAGE_COMPONENTS.
+RuleGenStage.js — delete the file once unreferenced.
+Stepper goes from 6 stages to 5: Discovery → AST Walk & Wrapper Extraction → AI Sink ID → AI Vulnerability Analysis → Comparison.
+
+Reminder: semgrep_rule_generator.py, the .fixora-rules.yml push, and custom_rules_yaml storage in ai_debug all keep running unchanged — this only removes one stepper panel from the UI.
+D. The monorepo bug — confirmed, and worse than "doesn't include every folder"
+I traced build_scan_targets() end to end. Your instinct is right, and the actual root cause is one level deeper than "missing requirements.txt":
+pythonanchored_languages = {a["language"] for a in found_anchors}
+for lang in ("python", "react"):
+    if lang in anchored_languages:
+        continue
+anchored_languages is computed across the whole repo, not per directory. So if frontend/package.json gives you a react anchor, the python fallback pass is gated purely on "is python anchored anywhere at all in this repo" — it has no concept of "but backend/ specifically has no anchor." Even if backend/ is the only python code in the repo, as soon as any react anchor exists anywhere, that's irrelevant to this check — the real failure is the next part:
+pythonkey = (lang, _norm_abs(repo_root))   # <- inferred target is rooted at the WHOLE repo, not backend/
+...
+has_local_source = _has_lang_file_immediate(root_abs, lang)   # only checks files directly in repo_root
+has_code_dir = any(isdir(repo_root/name) for name in ("src","lib","app"))
+if not has_local_source and not has_code_dir:
+    phantom_roots_skipped.append(...)
+    continue   # <- backend/ never gets scanned, silently
+If your .py files live in backend/ (not literally at repo root, not in src/lib/app), neither condition is true, and the entire python target gets dropped as a "phantom root." Nothing logs this as an error — it just quietly never scans backend/. This is exactly your scenario: frontend/package.json exists, backend/ has no manifest, backend/*.py gets silently skipped.
+The fix needs to stop treating anchor coverage as repo-wide and start asking "which actual source-containing directories aren't already covered by an anchored target":
+pythondef _find_uncovered_source_roots(repo_root, lang, covered_roots):
+    """Walk the repo for directories containing `lang` source files that
+    aren't already inside an anchored target's root. Stops descending the
+    
+    moment it finds one, so it returns `backend/`, not `backend/app/utils/`."""
+    exts = _lang_exts(lang)
+    found = []
+
+    def is_covered(path):
+        np = _norm_abs(path)
+        return any(np == c or np.startswith(c + os.sep) for c in covered_roots)
+
+    for dirpath, dirnames, filenames in os.walk(repo_root):
+        dirnames[:] = [d for d in dirnames if d not in IGNORE_DIRS]
+        if is_covered(dirpath):
+            dirnames[:] = []   # already owned by an anchored target, don't re-claim it
+            continue
+        if any(fn.lower().endswith(exts) for fn in filenames):
+            found.append(dirpath)
+            dirnames[:] = []   # found a source root here, don't fragment further inside it
+    return found
+Then in build_scan_targets, after anchored targets are built:
+pythoncovered_roots = {item["root_abs"] for item in unique.values()}
+for lang in ("python", "react"):
+    for src_root in _find_uncovered_source_roots(repo_root, lang, covered_roots):
+        key = (lang, _norm_abs(src_root))
+        if key not in unique:
+            unique[key] = {"language": lang, "root_abs": _norm_abs(src_root),
+                            "anchors": [], "inferred": True}
+This makes backend/ its own inferred python target, correctly rooted, correctly reported in scan_targets (which matters for the visualizer's per-folder breakdown too — right now an inferred target shows scan_path: ".", which is both wrong and confusing in the UI). The old "phantom root" check stays relevant for anchored targets only (e.g. a stray requirements.txt with no code nearby) and becomes effectively unreachable for inferred ones, since they're only created when source was already found.
+Acceptance test before you trust this: a fixture repo with frontend/package.json + frontend/src/App.jsx, and backend/main.py with zero manifest files. Confirm wrapper-hunter-results.json reports two scan_targets (react at frontend/, python at backend/), and that backend/main.py's imports and wrapper functions actually show up in the results. Today they won't.
+E. The sink-detection logic — this one will surprise you
+You asked me to brutally check whether the sink-finding logic is sound. It isn't, in a specific and very common way. Look at the fallback path in extract_python_wrappers:
+pythonelif "." in call_str:
+    method = call_str.rsplit(".", 1)[-1]
+    if method in DANGEROUS_SINK_METHODS:
+        calls_found[call_str] = f"<object>.{method}"
+This fires whenever a method call's name matches the set — regardless of what the object actually is. And DANGEROUS_SINK_METHODS contains "get", "post", "put", "patch", "find", "update", "parse", "load", "replace", "run", "send". Every one of those is also an extremely common method name on things that have nothing to do with security:
+
+config.get("key") — a plain dict read — gets flagged as a potential SSRF sink because get is in the set under "Request / SSRF."
+text.replace("a","b") — a string operation — gets flagged as a potential path-traversal sink (replace is grouped under "File System").
+results.find(x) on a list comprehension, or any custom class with a .find() method, gets flagged as a NoSQL sink.
+
+This isn't a theoretical edge case, it's the single most common shape of Python/JS code there is. The JS extractor has the identical pattern with the identical generic names. The consequence isn't just noisy results — every false "wrapper" gets bundled into the Phase 2 LLM payload, which means more Groq chunks, more rate-limit pressure, a higher chance of tripping MAX_PHASE2_CHUNKS on larger repos, and the LLM spending its (tightly prompted) judgment on config.get() instead of real sinks.
+The fix is to split the set by whether the name alone is trustworthy without an import binding:
+python# Rarely legitimate outside their dangerous use — safe to flag on name alone
+UNAMBIGUOUS_SINK_METHODS = {
+    "execute", "executemany", "executescript", "system", "popen",
+    "check_output", "unpickle", "yaml_load", "XMLParser", "drawString",
+    "mogrify", "callproc", "search_s",
+}
+
+# Only meaningful once we've actually traced the object back to a known
+# dangerous import — too generic to trust on the bare method name
+AMBIGUOUS_SINK_METHODS = {
+    "find", "find_one", "aggregate", "insert", "update", "delete_many", "update_one",
+    "run", "call", "communicate", "spawn", "fork",
+    "get", "post", "put", "patch", "request", "send",
+    "loads", "load", "parse", "fromstring",
+    "remove", "unlink", "rmdir", "rename", "replace", "mkdir", "makedirs",
+    "render", "render_template", "Template", "encrypt", "decrypt", "md5", "sha1", "Cipher", "xpath",
+}
+Classification then becomes: import-resolved (root in import_derived / root in imported_names) → flag regardless of which bucket the method is in, full confidence. No import binding → only flag if the method is in UNAMBIGUOUS_SINK_METHODS; drop it otherwise. requests.get(...) still gets caught (resolved via the requests import), config.get(...) doesn't (no import binding, ambiguous name). Mirror this exact split in DANGEROUS_SINK_METHODS inside js_extractor.js.
+This is a real behavior change to a production detector, not a free lunch — before shipping it, re-run it against two or three already-scanned repos and diff the wrapper counts to confirm you're only losing noise, not real coverage. I kept the genuinely SQL/OS-specific names (execute, system, popen, etc.) name-matchable precisely so you don't lose the legitimate "we never traced cursor back to its import" cases.
+F. AST Walk & Wrapper Extraction — the actual redesign
+Right now ASTWalkStage.js renders a flat list (function name, line range, badges for calls/modules_used). You want a real tree, real traversal, and a real answer to "why is this module a sink" — which conveniently is the exact same confidence metadata from item E. Here's what that node looks like once it carries that metadata:
+  ::view-transition-group(*),
+  ::view-transition-old(*),
+  ::view-transition-new(*) {
+    animation-duration: 0.25s;
+    animation-timing-function: cubic-bezier(0.19, 1, 0.22, 1);
+  }
+VvisualizeVvisualize show_widgetThat's the shape of one function, scoped on purpose — a literal full-repo AST would be thousands of nodes and unreadable. Scoping to one function at a time (root = the wrapper, children = its calls in source order) is both literally a real AST and small enough to actually traverse on screen.
+Data model needed. None of ast_walk's current trace data has this — it only has flat calls[]/modules_used[] arrays, no tree shape, no confidence. Two ways to get it, and I'd ship them in sequence rather than both at once:
+
+Phase 1 (cheap, ship first, Python only): every wrapper already stores its source_code in ai_debug.wrapper_hunter_results. Python's ast module is stdlib — when the trace endpoint is hit, parse that one function's stored source with ast.parse(), walk it, and emit a small JSON tree of Call nodes in document order, each annotated with callee, resolved_module (if import-traced), is_sink, sink_category, and confidence (using the unambiguous/ambiguous split from item E). This is a genuine AST for Python, available immediately, no GitHub Actions changes.
+Phase 2 (JS, follow-up): same idea but JS needs a parser the FastAPI backend doesn't have natively. Either reuse the existing Babel-based traversal from js_extractor.js as a small Node subprocess the backend can shell out to, or — more robust long-term — have js_extractor.js and wrapper_hunter.py emit this same ast_trail directly at scan time (during the actual GitHub Actions run) so the visualizer never re-parses anything and can't drift from what was actually found. I'd treat that as the "do it properly" version once Phase 1 proves the UX is worth it — it's a bigger lift since it touches the same heredoc scripts as item D.
+
+Frontend component. Replace ASTWalkStage.js's flat list with: a file picker → function picker (reusing the data you already have) → on selection, render the tree above (react-flow or the same Framer-Motion/SVG pattern as the rest of the visualizer) with a traversal cursor that highlights nodes in document order, pausing on sink matches to show the justification text ("matched via explicit import of subprocess" vs "name-match only on get, no import binding found — review manually"). The confirmed-sink branch animates into the "Packaged for AI" node, which is your visual bridge into the existing llm_phase1/llm_phase2 stages — directly answering "getting ready to send for AI" without inventing a new stage.
+Suggested order for this round
+
+A + B + C (route removal, emoji removal, drop rule-gen stage) — trivial, no behavior risk, do these first and ship immediately.
+D (monorepo fix) — backend-only, no frontend dependency, validate with the fixture-repo test before merging.
+E (sink confidence split) — backend-only, do this right after D since F's tree visualization is much less interesting without the confidence tags it produces.
+F Phase 1 (Python AST tree, on-demand) — once E exists, this is mostly frontend + one new endpoint.
+F Phase 2 (JS tree, trail-at-scan-time) — separate follow-up, bigger lift.
+
