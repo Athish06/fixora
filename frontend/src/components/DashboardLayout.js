@@ -10,12 +10,28 @@ import {
   X,
   PanelLeftClose,
   ChevronRight,
-  BarChart2,
-  Infinity
+  BarChart2
 } from 'lucide-react';
 import { useAuthStore } from '../store/authStore';
 import { Button } from '../components/ui/button';
 import ThemeToggle from './ThemeToggle';
+
+const SharpInfinity = ({ className }) => (
+  <svg 
+    xmlns="http://www.w3.org/2000/svg" 
+    viewBox="0 0 24 24" 
+    fill="none" 
+    stroke="currentColor" 
+    strokeWidth="2" 
+    strokeLinecap="square" 
+    strokeLinejoin="miter" 
+    className={className}
+  >
+    <path d="M 4 2.5 L 5.5 4 L 4 5.5 L 2.5 4 Z" fill="currentColor" stroke="none" />
+    <path d="M 20 18.5 L 21.5 20 L 20 21.5 L 18.5 20 Z" fill="currentColor" stroke="none" />
+    <path d="M 9 10.5 L 4 8 L 4 20 L 20 4 L 20 16 L 15 13.5" />
+  </svg>
+);
 
 const DashboardLayout = ({ children }) => {
   const location = useLocation();
@@ -78,7 +94,7 @@ const DashboardLayout = ({ children }) => {
         <div className={`flex items-center ${sidebarCollapsed ? 'justify-center' : 'justify-between'} h-16 px-4 border-b border-border`}>
           <Link to="/dashboard" className={`flex items-center ${sidebarCollapsed ? '' : 'space-x-3'}`} data-testid="logo">
             <div className="w-8 h-8 bg-primary rounded-lg flex items-center justify-center flex-shrink-0">
-              <Infinity className="w-5 h-5 text-primary-foreground" />
+              <SharpInfinity className="w-5 h-5 text-primary-foreground" />
             </div>
             {!sidebarCollapsed && (
               <span className="text-lg font-semibold text-foreground">Fixora</span>
