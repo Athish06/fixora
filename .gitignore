@@ -84,3 +84,5 @@ frontend/.env
 IP/.env
 *.png
 generate.py
+.*txt
+.*md
