@@ -41,16 +41,6 @@ const Dashboard = () => {
     }
   };
 
-  const getRiskColor = (score) => {
-    const colors = {
-      'A': 'text-green-500',
-      'B': 'text-blue-500',
-      'C': 'text-yellow-500',
-      'D': 'text-orange-500',
-      'F': 'text-red-500'
-    };
-    return colors[score] || 'text-gray-500';
-  };
 
   const getSeverityColor = (severity) => {
     const colors = {
@@ -79,33 +69,11 @@ const Dashboard = () => {
         {/* Header */}
         <div>
           <h1 className="text-4xl font-bold mb-2">Security Dashboard</h1>
-          <p className="text-muted-foreground text-lg">
-            Overview of your vulnerability landscape
-          </p>
         </div>
 
         {/* Stats Cards */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-          <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.5 }}
-          >
-            <AnimatedCard hover={true} data-testid="risk-score-card">
-              <CardHeader className="pb-3">
-                <CardDescription>Overall Risk Score</CardDescription>
-                <CardTitle className={`text-5xl font-bold ${getRiskColor(stats?.risk_score)}`}>
-                  {stats?.risk_score || 'N/A'}
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="flex items-center text-sm text-muted-foreground">
-                  <Shield className="w-4 h-4 mr-2" />
-                  <NumberTicker value={stats?.total_repositories || 0} /> repositories
-                </div>
-              </CardContent>
-            </AnimatedCard>
-          </motion.div>
+
 
           <motion.div
             initial={{ opacity: 0, y: 20 }}
@@ -155,26 +123,7 @@ const Dashboard = () => {
             </AnimatedCard>
           </motion.div>
 
-          <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.5, delay: 0.3 }}
-          >
-            <AnimatedCard hover={true} data-testid="scans-week-card">
-              <CardHeader className="pb-3">
-                <CardDescription>Scans This Week</CardDescription>
-                <CardTitle className="text-5xl font-bold">
-                  <NumberTicker value={stats?.scans_this_week || 0} />
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="flex items-center text-sm text-muted-foreground">
-                  <Activity className="w-4 h-4 mr-2" />
-                  Automated scans
-                </div>
-              </CardContent>
-            </AnimatedCard>
-          </motion.div>
+
         </div>
 
         {/* Top Vulnerabilities */}
