@@ -1235,8 +1235,11 @@ const RepositoryDetail = () => {
                                         <p className="text-sm text-foreground">{vuln.file_path || 'unknown-file'}{vuln.line_number ? `:${vuln.line_number}` : ''}</p>
                                       )}
                                       {Array.isArray(vuln.all_affected_lines) && vuln.all_affected_lines.length > 0 && (
-                                        <p className="text-xs text-muted-foreground mt-2">
-                                          Exact Affected Lines: [ {vuln.all_affected_lines.join(', ')} ]
+                                        <p className="text-xs text-muted-foreground mt-2 flex items-center">
+                                          <span>Exact Affected Lines: [ {vuln.all_affected_lines.join(', ')} ]</span>
+                                          {(vuln.check_id?.includes('fixora-wrapper') || vuln.source === 'fixora-ai-analysis' || vuln.wrapper_defined_in) && (
+                                            <span className="ml-2 px-1.5 py-0.5 bg-blue-500/20 text-blue-400 border border-blue-500/30 rounded text-[10px] font-bold uppercase tracking-wider">Wrapper Definition</span>
+                                          )}
                                         </p>
                                       )}
                                     </div>

@@ -118,9 +118,9 @@ def generate_custom_rules(
         wrapper_functions = section.get("wrapper_functions", [])
 
         for wrapper in wrapper_functions:
-            rule = _build_wrapper_rule(wrapper, semgrep_langs, lang_key)
-            if rule:
-                rules.append(rule)
+            wrapper_rules = _build_wrapper_rule(wrapper, semgrep_langs, lang_key)
+            if wrapper_rules:
+                rules.extend(wrapper_rules)
 
     # ── Manually-flagged functions (AI inconclusive / 413 too large) ──────
     for entry in (manual_review_required or []):
@@ -166,12 +166,12 @@ def _build_wrapper_rule(
     wrapper: Dict[str, Any],
     semgrep_langs: List[str],
     lang_key: str,
-) -> Dict[str, Any] | None:
-    """Build a single Semgrep rule dict for a vulnerable wrapper function."""
+) -> List[Dict[str, Any]]:
+    """Build Semgrep rule dicts (Definition + Taint Caller) for a vulnerable wrapper function."""
 
     func_name = wrapper.get("function_name", "").strip()
     if not func_name:
-        return None
+        return []
 
     vuln_type   = wrapper.get("vulnerability_type", "Security Issue")
     severity    = wrapper.get("severity", "MEDIUM").upper()
@@ -228,49 +228,49 @@ def _build_wrapper_rule(
 
     # Legacy fallback path
     payload = malicious_payload or str(wrapper.get("example_exploit", "")).strip()
-    generic_placeholder = (
-        not payload
-        or "malicious_payload" in payload.lower()
-        or "user_input" in payload.lower()
-    )
-    if generic_placeholder:
-        default_exploit_map = {
-            "SQL Injection": "bulk_insert(\"users; DROP TABLE users; --\", data)",
-            "Command Injection": "execute_background_task(\"ping -c 1 127.0.0.1; cat /etc/passwd\")",
-            "Path Traversal": "read_report(\"../../../../etc/passwd\")",
-            "XSS": "render_comment(\"<img src=x onerror=alert(document.cookie)>\")",
-            "SSRF": "fetch_remote(\"http://169.254.169.254/latest/meta-data/\")",
-            "Insecure Deserialization": "load_payload(\"gASV...crafted_pickle...\")",
-            "IDOR / Broken Access Control": "get_invoice(\"another-users-invoice-id\")",
-        }
-        payload = default_exploit_map.get(vuln_type, "<malicious_data>")
+    
+    # Do not force fake string payloads for architectural flaws
+    architectural_flaws = {
+        "Plaintext Password", "Broken Authentication", "Missing Authentication",
+        "Debug Mode Enabled", "IDOR / Broken Access Control", "Optimistic UI De-Sync",
+        "Unhandled Promise Rejection"
+    }
+    
+    if vuln_type in architectural_flaws and not malicious_payload:
+        payload = ""
+        injected_example = ""
+    else:
+        generic_placeholder = (
+            not payload
+            or "malicious_payload" in payload.lower()
+            or "user_input" in payload.lower()
+        )
+        if generic_placeholder:
+            default_exploit_map = {
+                "SQL Injection": "bulk_insert(\"users; DROP TABLE users; --\", data)",
+                "Command Injection": "execute_background_task(\"ping -c 1 127.0.0.1; cat /etc/passwd\")",
+                "Path Traversal": "read_report(\"../../../../etc/passwd\")",
+                "XSS": "render_comment(\"<img src=x onerror=alert(document.cookie)>\")",
+                "SSRF": "fetch_remote(\"http://169.254.169.254/latest/meta-data/\")",
+                "Insecure Deserialization": "load_payload(\"gASV...crafted_pickle...\")",
+            }
+            payload = default_exploit_map.get(vuln_type, "<malicious_data>")
 
     code_lang = "python" if lang_key == "python" else "javascript"
 
     injected_example = str(wrapper.get("exploit_injected_example", "")).strip()
-    if not injected_example:
+    if not injected_example and payload:
         injected_example = f"{func_name}({parameter} = {payload})"
-
-    injected_code_block = (
-        f"```{code_lang}\\n"
-        f"// Target Function: {func_name}()\\n"
-        f"// Parameter: {parameter}\\n\\n"
-        f"// Attacker executes:\\n"
-        f"{injected_example}\\n"
-        f"```"
-    )
+    elif not payload:
+        injected_example = ""
 
     if not impact_summary:
         impact_summary = impact_text
 
-    # 3. The markdown structure
+    # 3. The markdown structure (Simplified to avoid duplication with UI)
     message = (
-        f"### {vuln_type} via `{parameter}`\n\n"
-        f"**Vulnerable Sink:** Passes untrusted data directly to `{wraps_text}`.\n\n"
-        f"**Live Exploit Vector:**\n"
-        f"{injected_code_block}\n\n"
-        f"**Outcome:**\n{explanation}\n\n"
-        f"**Data at Risk (Impact):**\n{impact_summary}"
+        f"{vuln_type} via `{parameter}`\n"
+        f"Vulnerable Sink: Passes untrusted data directly to `{wraps_text}`."
     )
 
     metadata: Dict[str, Any] = {
@@ -399,7 +399,54 @@ def _build_wrapper_rule(
                 "metadata": metadata,
             }
 
-    return rule
+    rules_list = [rule]
+
+    # ── Build the Taint Rule (Rule B) ──
+    # This traces generic web inputs into the vulnerable wrapper.
+    taint_rule_id = f"fixora-taint-{safe_name}"
+    
+    # Define broad, framework-agnostic pattern-sources
+    if lang_key == "python":
+        sources = [
+            {"pattern": "request.$W(...)("},
+            {"pattern": "request.$W"},
+            {"pattern": "req.$W"},
+            {"pattern": "flask.request.$W"},
+            {"pattern": "django.http.HttpRequest.$W"},
+            # Also catch function parameters to support multi-hop deep taint
+            {"pattern": "$ARG", "pattern-inside": "def $FUNC(..., $ARG, ...): ..."}
+        ]
+        sinks = [{"pattern": f"{func_name}(...)"}, {"pattern": f"$OBJ.{func_name}(...)"}]
+    else:
+        sources = [
+            {"pattern": "req.$W"},
+            {"pattern": "request.$W"},
+            {"pattern": "req.body.$W"},
+            {"pattern": "req.query.$W"},
+            {"pattern": "req.params.$W"},
+            # Also catch function parameters
+            {"pattern": "$ARG", "pattern-inside": "function $FUNC(..., $ARG, ...) { ... }"},
+            {"pattern": "$ARG", "pattern-inside": "$FUNC = (..., $ARG, ...) => { ... }"}
+        ]
+        clean_name = func_name.replace("()", "").strip()
+        sinks = [
+            {"pattern": f"{clean_name}(...)"},
+            {"pattern": f"$OBJ.{clean_name}(...)"}
+        ]
+
+    taint_rule = {
+        "id": taint_rule_id,
+        "mode": "taint",
+        "pattern-sources": sources,
+        "pattern-sinks": sinks,
+        "message": f"Taint tracked to vulnerable wrapper `{func_name}`.\n{message}",
+        "severity": semgrep_severity,
+        "languages": rule["languages"],
+        "metadata": metadata,
+    }
+    rules_list.append(taint_rule)
+
+    return rules_list
 
 
 # ─────────────────────────────────────────────────────────────────────────────
