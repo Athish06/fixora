@@ -413,8 +413,14 @@ def _build_wrapper_rule(
             {"pattern": "req.$W"},
             {"pattern": "flask.request.$W"},
             {"pattern": "django.http.HttpRequest.$W"},
-            # Also catch function parameters to support multi-hop deep taint
-            {"pattern": "$ARG", "pattern-inside": "def $FUNC(..., $ARG, ...): ..."}
+            # Robust, timeout-free routing parameter extraction for FastAPI, Flask, etc.
+            {
+                "patterns": [
+                    {"pattern-inside": "@$APP.$METHOD(...)\ndef $FUNC(..., $ARG, ...):\n    ..."},
+                    {"metavariable-regex": {"metavariable": "$METHOD", "regex": "(?i)^(get|post|put|delete|patch|route)$"}},
+                    {"pattern": "$ARG"}
+                ]
+            }
         ]
         sinks = [{"pattern": f"{func_name}(...)"}, {"pattern": f"$OBJ.{func_name}(...)"}]
     else:
@@ -424,9 +430,11 @@ def _build_wrapper_rule(
             {"pattern": "req.body.$W"},
             {"pattern": "req.query.$W"},
             {"pattern": "req.params.$W"},
-            # Also catch function parameters
-            {"pattern": "$ARG", "pattern-inside": "function $FUNC(..., $ARG, ...) { ... }"},
-            {"pattern": "$ARG", "pattern-inside": "$FUNC = (..., $ARG, ...) => { ... }"}
+            # Frontend specific sources
+            {"pattern": "window.location.$W"},
+            {"pattern": "document.cookie"},
+            {"pattern": "fetch(...)"},
+            {"pattern": "axios(...)"}
         ]
         clean_name = func_name.replace("()", "").strip()
         sinks = [

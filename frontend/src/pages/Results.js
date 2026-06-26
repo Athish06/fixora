@@ -158,39 +158,11 @@ MIICWwIBAAKBgQDQ...`,
         description: 'Successfully caught the IDOR in benefits.js and allocations.js, but flagged the same missing permission checks 6 times (5 duplicates). Completely failed to find 10 out of 11 core vulnerabilities.'
       }
     },
-    missedLogs: `=== FIXORA - FALSE POSITIVES (3) ===
-1. artifacts/db-reset.js:19 - Dummy environment seeding script
-2. artifacts/db-reset.js:28 - Dummy environment seeding script
-3. artifacts/db-reset.js:36 - Dummy environment seeding script
-
-=== FIXORA - MISSED VULNERABILITIES (4) ===
+    missedLogs: `=== FIXORA - MISSED VULNERABILITIES (4) ===
 1. NoSQL Injection (app/routes/allocations.js)
 2. Insecure Deserialization via Cookie (app/routes/profile.js)
 3. Insecure Direct Object Reference (app/routes/benefits.js)
-4. Outdated Vulnerable Components (package.json)
-
-=== VANILLA SEMGREP - FALSE POSITIVES (3) ===
-1. django-no-csrf-token (benefits.html)
-2. django-no-csrf-token (login.html)
-3. django-no-csrf-token (memos.html)
-
-=== VANILLA SEMGREP - MISSED VULNERABILITIES (4) ===
-1. NoSQL Injection
-2. Insecure Deserialization via Cookie
-3. Insecure Direct Object Reference (IDOR)
-4. Outdated Vulnerable Components
-
-=== SEMGREP AI - MISSED VULNERABILITIES (10) ===
-1. Eval / Code Injection
-2. Server-Side Request Forgery (SSRF)
-3. Open Redirect
-4. Stored XSS
-5. Hardcoded Secrets
-6. Security Misconfiguration (CSRF)
-7. Broken Auth (Insecure Cookies)
-8. NoSQL Injection
-9. Insecure Deserialization
-10. Vulnerable Components`
+4. Outdated Vulnerable Components (package.json)`
   },
   vampi: {
     title: 'VAmPI (Vulnerable API)',
@@ -318,36 +290,10 @@ if user.password != password:
         description: 'Caught the BOLA/IDOR vulnerability (flagging it 5 times as Improper Auth/IDOR). Completely failed to find 8 out of 9 core API flaws (SQLi, ReDoS, JWT Weak Keys, Mass Assignment, etc).'
       }
     },
-    missedLogs: `=== FIXORA - FALSE POSITIVES (1) ===
-1. openapi_specs/openapi3.yml:193 - Dummy example token for documentation
-
-=== FIXORA - MISSED VULNERABILITIES (3) ===
+    missedLogs: `=== FIXORA - MISSED VULNERABILITIES (3) ===
 1. Regular Expression Denial of Service (ReDoS)
 2. Unauthorized Password Change (PUT /users/v1/{username}/password)
-3. Lack of Resources / Enumeration
-
-=== VANILLA SEMGREP - FALSE POSITIVES (0) ===
-- None
-
-=== VANILLA SEMGREP - MISSED VULNERABILITIES (8) ===
-1. SQL Injection (SQLi)
-2. Broken Object Level Authorization (BOLA / IDOR)
-3. Mass Assignment
-4. Excessive Data Exposure
-5. Regular Expression Denial of Service (ReDoS)
-6. Unauthorized Password Change
-7. Lack of Resources & Rate Limiting
-8. User and Password Enumeration
-
-=== SEMGREP AI - MISSED VULNERABILITIES (8) ===
-1. SQL Injection (SQLi)
-2. Mass Assignment
-3. Excessive Data Exposure
-4. Regular Expression Denial of Service (ReDoS)
-5. JWT Authentication Bypass (Weak Key)
-6. Unauthorized Password Change
-7. Lack of Resources & Rate Limiting
-8. User and Password Enumeration`
+3. Lack of Resources / Enumeration`
   },
     test_repo: {
     title: 'Custom Test Repository',
@@ -646,10 +592,7 @@ if user.password != password:
         description: 'Caught 8 logic/auth flaws (Missing Auth, IDORs, Timing Attack, Logic Bypass). But its classifications are messy (labeled SQLi/NoSQLi as AUTHZ). Blind to 73% of the repo, scoring 0/10 on Frontend and 1/10 on Easy.'
       }
     },
-    missedLogs: `=== FIXORA - FALSE POSITIVES ===
-- None!
-
-=== FIXORA - MISSED VULNERABILITIES (9) ===
+    missedLogs: `=== FIXORA - MISSED VULNERABILITIES (9) ===
 - [EASY] Hardcoded JWT
 - [EASY] Missing Auth on delete route
 - [EASY] React AWS Key
@@ -658,47 +601,7 @@ if user.password != password:
 - [MEDIUM] Improper LocalStorage
 - [MEDIUM] Unhandled Promise
 - [HARD] Logic Bypass
-- [HARD] Misplaced Auth
-
-=== VANILLA SEMGREP - MISSED VULNERABILITIES (20) ===
-- [EASY] Hardcoded Secret (JWT_SECRET)
-- [EASY] Plaintext Password Comparison
-- [EASY] Missing Authentication
-- [EASY] Hardcoded Secret (AWS Key)
-- [MEDIUM] Mass Assignment
-- [MEDIUM] IDOR / Broken Access Control
-- [MEDIUM] Weak Cryptography
-- [MEDIUM] ReDoS
-- [MEDIUM] XXE
-- [MEDIUM] Optimistic UI De-Sync
-- [MEDIUM] Improper LocalStorage Usage
-- [MEDIUM] State Race Condition
-- [MEDIUM] Unhandled Promise Rejection
-- [HARD] Sneaky IDOR
-- [HARD] HTTP Verb Bias Trap
-- [HARD] Timing Attack
-- [HARD] Logic Bypass
-- [HARD] Server-Side Attribute Override
-- [HARD] NoSQL Injection
-- [HARD] Misplaced / Ineffective Auth
-
-=== SEMGREP AI - MISSED VULNERABILITIES (22) ===
-- All Frontend JSX flaws (AWS Secret, dangerouslySetInnerHTML, location.hash XSS, UI De-Sync, State Race, Unhandled Promises)
-- [EASY] SQL Injection (easy.py)
-- [EASY] Command Injection (os.system)
-- [EASY] Path Traversal (open)
-- [EASY] Plaintext Password Comparison
-- [EASY] Insecure Deserialization
-- [EASY] Debug Mode Enabled
-- [EASY] Hardcoded Secret (JWT)
-- [MEDIUM] SSRF
-- [MEDIUM] Weak Cryptography
-- [MEDIUM] ReDoS
-- [MEDIUM] XXE
-- [HARD] Second-Order SQLi
-- [HARD] Server-Side Attribute Override
-- [HARD] Blind Command Injection
-- [HARD] Misplaced / Ineffective Auth`
+- [HARD] Misplaced Auth`
   }
 };
 
@@ -897,13 +800,6 @@ const Results = () => {
                     total={data.performance.vanillaSemgrep.total}
                   />
                   
-                  <div className="mt-4 flex items-center justify-between text-sm">
-                    <span className="text-muted-foreground">False Positives</span>
-                    <Badge variant={data.performance.vanillaSemgrep.falsePositives === 0 ? "outline" : "destructive"} className="font-mono">
-                      {data.performance.vanillaSemgrep.falsePositives}
-                    </Badge>
-                  </div>
-                  
                 </CardContent>
               </Card>
 
@@ -928,13 +824,6 @@ const Results = () => {
                     score={data.performance.semgrepAi.score} 
                     total={data.performance.semgrepAi.total}
                   />
-                  
-                  <div className="mt-4 flex items-center justify-between text-sm">
-                    <span className="text-muted-foreground">False Positives</span>
-                    <Badge variant={data.performance.semgrepAi.falsePositives === 0 ? "outline" : "destructive"} className="font-mono">
-                      {data.performance.semgrepAi.falsePositives}
-                    </Badge>
-                  </div>
                   
                 </CardContent>
               </Card>
